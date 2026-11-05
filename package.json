@@ -10,6 +10,7 @@
     "build:core": "tsc",
     "build:view": "npm run build:core && node scripts/build-view-bundle.mjs",
     "package:local": "node scripts/package-local.mjs",
+    "package:download": "node scripts/package-download.mjs",
     "test:view:host": "npm run build:view && powershell -NoProfile -ExecutionPolicy Bypass -File tests/view-host.ps1",
     "benchmark": "npm run build:core && node dist/benchmark/run.js",
     "test": "npm run build:core && node scripts/run-tests.mjs",

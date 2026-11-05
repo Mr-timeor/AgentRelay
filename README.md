@@ -20,7 +20,9 @@
 
 这是实验性的源码接入项目。已有 Windows Desktop 0.2.1-rc.2 的接入验证及 0.2.1-rc.3 的小规模真实协作记录。未派发任务调整已通过隔离宿主 mock 验证，跨机通用安装和其他宿主版本仍需验证。
 
-目前采用构建后安装本地 bundle 的方式，尚无通用的下载即装发行包。GitHub 仓库 URL 和下载源码的根目录用于获取源码，无法直接作为 DSH bundle 安装。
+提供本地 ZIP 构建命令，产物包含已编译插件、配置示例和安装说明。下载者解压后安装两个 bundle，步骤见[下载安装](docs/下载安装.md)。当前下载包正进行宿主安装验收，发行附件待验收后发布。
+
+GitHub 仓库 URL 和下载源码的根目录用于获取源码，安装时选择解压或构建产物中的 `harness/bundle`，需要图时另装 `harness/view-bundle`。
 
 ## 本地体验
 
@@ -65,8 +67,10 @@ node (Join-Path $packageRoot 'core/dist/cli.js') graph fixtures/development.json
 ```sh
 npm test
 npm run benchmark
+npm run package:download  # Windows下生成ZIP及SHA256校验文件
 ```
 
+- [下载安装](docs/下载安装.md)
 - [快速开始](docs/快速开始.md)
 - [设计方案](docs/设计方案.md)
 - [调度算法](docs/调度算法.md)

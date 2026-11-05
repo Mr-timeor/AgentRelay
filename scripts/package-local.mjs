@@ -67,7 +67,7 @@ export async function buildLocalPackage(outputParent = join(root, ".scheduler/re
     await cp(join(root, "fixtures/benchmarks", file), join(target, "fixtures/benchmarks", file));
   }
   await mkdir(join(target, "docs"));
-  for (const file of ["快速开始.md", "设计方案.md", "调度算法.md", "接口与数据契约.md", "离线评测.md"]) {
+  for (const file of ["快速开始.md", "下载安装.md", "设计方案.md", "调度算法.md", "接口与数据契约.md", "离线评测.md"]) {
     await cp(join(root, "docs", file), join(target, "docs", file));
   }
   await writeFile(join(target, "README.md"), `# Scheduler 本地验证包 ${metadata.version}\n\n` +

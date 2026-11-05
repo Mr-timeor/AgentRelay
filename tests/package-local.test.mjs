@@ -35,7 +35,7 @@ test("分发目录：独立编译、不更新安装副本，迁移后CLI、核�
   assert.ok(!manifest.files.some(file => file.includes("node_modules") || file.startsWith(".scheduler/") || file.includes("trials/")));
   assert.ok(!manifest.files.some(file => file.endsWith(".map")));
   assert.deepEqual(manifest.files.filter(file => file.startsWith("docs/")).sort(), [
-    "docs/快速开始.md", "docs/设计方案.md", "docs/调度算法.md", "docs/接口与数据契约.md", "docs/离线评测.md"
+    "docs/快速开始.md", "docs/下载安装.md", "docs/设计方案.md", "docs/调度算法.md", "docs/接口与数据契约.md", "docs/离线评测.md"
   ].sort());
   const cli = (...args) => exec(process.execPath, [join(moved, "core/dist/cli.js"), ...args], { cwd: moved });
   const plan = JSON.parse((await cli("plan", "fixtures/development.json")).stdout);
