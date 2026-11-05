@@ -1,4 +1,5 @@
 export type Status = "pending" | "running" | "review" | "completed" | "blocked" | "failed";
+export type ArtifactReference = string | string[];
 export interface Dependency { taskId: string; output?: string }
 export interface Resource { path: string; mode: "read" | "write" }
 export interface Task {
@@ -12,6 +13,7 @@ export interface Task {
   review: boolean;
   approval: boolean;
   owner?: string;
+  specFile?: string;
 }
 export interface Agent { id: string; categories: string[] }
 export interface Project { name: string; tasks: Task[]; agents: Agent[]; maxSegment: number }
@@ -21,11 +23,12 @@ export interface Run {
   phase: "awaiting" | "active" | "unknown" | "finished";
   startedAt: number;
   summary?: string;
+  rework?: { feedback: string; outputs: Progress["outputs"] };
 }
 export interface Progress {
   status: Status;
   approved: boolean;
-  outputs: Record<string, { accepted: boolean; reference: string }>;
+  outputs: Record<string, { accepted: boolean; reference: ArtifactReference }>;
   summary?: string;
 }
 export interface State {
@@ -54,7 +57,8 @@ export function normalize(input: any): Project {
       resources: (t.resources ?? []).map((r: any) => typeof r === "string" ? { path: r, mode: "write" } : r),
       outputs: t.outputs ?? [], priority: t.priority ?? 2,
       review: t.review ?? false, approval: t.approval ?? false,
-      ...(t.owner ? { owner: t.owner } : {})
+      ...(t.owner ? { owner: t.owner } : {}),
+      ...(t.specFile !== undefined && t.specFile !== null && t.specFile !== "" ? { specFile: t.specFile } : {})
     }))
   };
   if (!Number.isInteger(project.maxSegment) || project.maxSegment < 1 || project.maxSegment > 100) {
@@ -71,6 +75,15 @@ export function normalize(input: any): Project {
   }
   for (const t of project.tasks) {
     if (t.owner && !project.agents.some(a => a.id === t.owner)) throw new Error(`未知执行者：${t.owner}`);
+    if (t.specFile !== undefined) {
+      if (typeof t.specFile !== "string" || !t.specFile.trim()) throw new Error(`无效任务卡路径：${t.id}`);
+      if (/^(?:[a-z][a-z0-9+.-]*:|[/\\])/i.test(t.specFile)) throw new Error(`任务卡使用项目相对路径：${t.id}`);
+      let depth = 0;
+      for (const part of t.specFile.replaceAll("\\", "/").split("/")) {
+        if (part === "..") { if (--depth < 0) throw new Error(`任务卡超出项目根目录：${t.id}`); }
+        else if (part && part !== ".") depth++;
+      }
+    }
     if (!Number.isFinite(t.priority)) throw new Error(`无效优先级：${t.id}`);
     if (!Array.isArray(t.outputs) || t.outputs.some(o => typeof o !== "string")) throw new Error(`无效产物：${t.id}`);
     for (const r of t.resources) {

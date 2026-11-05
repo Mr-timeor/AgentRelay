@@ -1,0 +1,58 @@
+{
+  "name": "rework-01：标签去重与中间交付保留",
+  "maxSegment": 1,
+  "agents": [
+    { "id": "rework-dev-01", "categories": ["开发"] },
+    { "id": "rework-qa-01", "categories": ["测试"] }
+  ],
+  "tasks": [
+    {
+      "id": "D1",
+      "title": "先提交接口契约及现有实现，退回后按测试证据修复",
+      "category": "开发",
+      "owner": "rework-dev-01",
+      "specFile": "fixtures/trials/rework-01/任务卡.md",
+      "review": true,
+      "outputs": ["contract", "implementation"],
+      "resources": [
+        ".scheduler/trials/rework-01/contract.md",
+        { "path": ".scheduler/trials/rework-01/app/src/labels-v1.mjs", "mode": "read" },
+        ".scheduler/trials/rework-01/app/src/labels-v2.mjs",
+        { "path": ".scheduler/trials/rework-01/app/tests", "mode": "read" },
+        ".scheduler/trials/rework-01/evidence/developer"
+      ]
+    },
+    {
+      "id": "Q1",
+      "title": "消费已接受的接口契约并独立复现 v1 缺陷",
+      "category": "测试",
+      "owner": "rework-qa-01",
+      "specFile": "fixtures/trials/rework-01/任务卡.md",
+      "dependsOn": [{ "taskId": "D1", "output": "contract" }],
+      "outputs": ["initial-report"],
+      "resources": [
+        { "path": ".scheduler/trials/rework-01/contract.md", "mode": "read" },
+        { "path": ".scheduler/trials/rework-01/app/src/labels-v1.mjs", "mode": "read" },
+        { "path": ".scheduler/trials/rework-01/app/tests/implementation.mjs", "mode": "read" },
+        { "path": ".scheduler/trials/rework-01/app/tests/legacy.test.mjs", "mode": "read" },
+        ".scheduler/trials/rework-01/app/tests/contract.test.mjs",
+        ".scheduler/trials/rework-01/evidence/initial"
+      ]
+    },
+    {
+      "id": "Q2",
+      "title": "整项验收后独立复测 v2 并核对既有产物",
+      "category": "测试",
+      "owner": "rework-qa-01",
+      "specFile": "fixtures/trials/rework-01/任务卡.md",
+      "dependsOn": ["D1", "Q1"],
+      "outputs": ["final-report"],
+      "resources": [
+        { "path": ".scheduler/trials/rework-01/contract.md", "mode": "read" },
+        { "path": ".scheduler/trials/rework-01/app", "mode": "read" },
+        { "path": ".scheduler/trials/rework-01/evidence/initial", "mode": "read" },
+        ".scheduler/trials/rework-01/evidence/final"
+      ]
+    }
+  ]
+}

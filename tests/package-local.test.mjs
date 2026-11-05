@@ -26,12 +26,22 @@ test("分发目录：独立编译、不更新安装副本，迁移后CLI、核�
   await rm(result.directory, { recursive: true });
   const manifest = JSON.parse(await readFile(join(moved, "manifest.json"), "utf8"));
   assert.equal(manifest.kind, "local-validation");
+  assert.equal(manifest.license, "MIT");
+  assert.equal(manifest.licenseStatus, "declared");
+  assert.match(await readFile(join(moved, "harness/bundle/LICENSE"), "utf8"), /MIT License/);
+  assert.match(await readFile(join(moved, "harness/view-bundle/LICENSE"), "utf8"), /MIT License/);
   assert.ok(manifest.files.includes("harness/bundle/dist/dispatcher/scheduler.js"));
+  assert.ok(manifest.files.includes("harness/bundle/dist/dispatcher/wake-queue.js"));
   assert.ok(!manifest.files.some(file => file.includes("node_modules") || file.startsWith(".scheduler/") || file.includes("trials/")));
   assert.ok(!manifest.files.some(file => file.endsWith(".map")));
+  assert.deepEqual(manifest.files.filter(file => file.startsWith("docs/")).sort(), [
+    "docs/快速开始.md", "docs/设计方案.md", "docs/调度算法.md", "docs/接口与数据契约.md", "docs/离线评测.md"
+  ].sort());
   const cli = (...args) => exec(process.execPath, [join(moved, "core/dist/cli.js"), ...args], { cwd: moved });
   const plan = JSON.parse((await cli("plan", "fixtures/development.json")).stdout);
   assert.deepEqual(plan.ready, ["A1"]);
+  assert.match((await cli("check", "fixtures/development.json", "not-created/state.json")).stdout, /本次未创建/);
+  await assert.rejects(stat(join(moved, "not-created")), { code: "ENOENT" });
   await cli("graph", "fixtures/development.json", "flow.html");
   assert.match(await readFile(join(moved, "flow.html"), "utf8"), /A1/);
   await cli("init", "fixtures/development.json", "state.json");
@@ -68,11 +78,14 @@ test("隔离宿主准备：可选择分发副本，不回退使用仓库插件",
   await cp("harness/bundle/package.json", join(custom, "package.json"));
   await cp("harness/bundle/index.mjs", join(custom, "index.mjs"));
   await exec(process.execPath, [resolve(scriptRoot, "tests/host/setup-isolated.mjs")], {
-    cwd: scriptRoot, env: { ...process.env, SCHEDULER_BUNDLE_DIR: custom, SCHEDULER_WAKE_TEST: "1" }
+    cwd: scriptRoot, env: { ...process.env, SCHEDULER_BUNDLE_DIR: custom, SCHEDULER_WAKE_TEST: "1", SCHEDULER_CONTEXT_TEST: "1" }
   });
   for (const profile of ["scheduler-test", "scheduler-loop", "scheduler-wake"]) {
     const installed = join(scriptRoot, ".harness-isolated/home/profiles", profile, "node_modules/dynamic-task-scheduler/index.mjs");
     assert.equal(await readFile(installed, "utf8"), await readFile(join(custom, "index.mjs"), "utf8"));
   }
   assert.match(await readFile(join(scriptRoot, ".harness-isolated/home/profiles/scheduler-wake/cordis.patch.yml"), "utf8"), /autoDispatch: true/);
+  const contextProject = JSON.parse(await readFile(join(scriptRoot, ".harness-isolated/project-loop.json"), "utf8"));
+  assert.equal(contextProject.tasks.find(t => t.id === "A1").specFile, "docs/tasks.md#A1");
+  assert.deepEqual(contextProject.tasks.find(t => t.id === "A2").dependsOn, ["A1", { taskId: "A1", output: "api" }]);
 });

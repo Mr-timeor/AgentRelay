@@ -105,6 +105,7 @@ export function renderGraph(state: State, options: GraphOptions = {}): string {
       : progress.status === "running" ? "等待执行者提交结果或中间产物" : reasons.join("；") || (p.ready.includes(t.id) ? "已就绪，等待调配" : "等待分配执行者");
     return [t.id, [
       `${t.id} · ${t.title}`, `类别：${t.category}`, `状态：${status(t.id)}`,
+      ...(t.specFile ? [`任务卡：${t.specFile}`] : []),
       `执行者：${run?.agentId ?? t.owner ?? p.segments.find(s => s.tasks.includes(t.id))?.agentId ?? "待分配"}`,
       `前置：${t.dependsOn.map(d => d.taskId + (d.output ? "/" + d.output : "")).join("、") || "无"}`,
       `资源：${t.resources.map(r => r.path + (r.mode === "read" ? "（读取）" : "（写入）")).join("、") || "未声明"}`,

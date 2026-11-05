@@ -1,5 +1,5 @@
 // 创建隔离 DSH_HOME（不触碰真实 profile），用于真实宿主加载与闭环验证。
-import { cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -18,6 +18,20 @@ async function createProfile(name, { loop, wake = false }) {
   const bundleSource = process.env.SCHEDULER_BUNDLE_DIR || join(root, "harness", "bundle");
   await cp(bundleSource, join(modules, "dynamic-task-scheduler"), { recursive: true });
   await cp(join(root, "fixtures", wake ? "wakeup.json" : "development.json"), projectFile);
+  if (loop && !wake && (process.env.SCHEDULER_CONTEXT_TEST === "1" || process.env.SCHEDULER_REWORK_TEST === "1")) {
+    const project = JSON.parse(await readFile(projectFile, "utf8"));
+    const second = project.tasks.find(t => t.id === "A2");
+    if (process.env.SCHEDULER_CONTEXT_TEST === "1") {
+      project.tasks.find(t => t.id === "A1").specFile = "docs/tasks.md#A1";
+      second.specFile = "docs/tasks.md#A2";
+      second.dependsOn = ["A1", { taskId: "A1", output: "api" }];
+    }
+    if (process.env.SCHEDULER_REWORK_TEST === "1") {
+      second.review = true;
+      second.outputs = ["implementation"];
+    }
+    await writeFile(projectFile, JSON.stringify(project, null, 2) + "\n");
+  }
   await rm(stateFile, { force: true });
 
   await writeFile(join(profile, "package.json"), JSON.stringify({

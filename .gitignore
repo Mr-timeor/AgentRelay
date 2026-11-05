@@ -1,9 +1,19 @@
-# 本地历史备份和机器生成的会话档案
-/.pi/backups/
-/.pi/session-archive.md
+# 本机任务集、历史记录和备份
+/.pi/
 /node_modules/
 /dist/
 /harness/bundle/dist/
 /harness/view-bundle/dist/
 /.harness-isolated/
 /.scheduler/
+
+# 内部工作记录保留在本机，公开文档使用白名单
+/docs/*
+!/docs/快速开始.md
+!/docs/设计方案.md
+!/docs/调度算法.md
+!/docs/接口与数据契约.md
+!/docs/离线评测.md
+!/docs/images/
+!/docs/images/**
+/fixtures/trials/*/执行说明.md

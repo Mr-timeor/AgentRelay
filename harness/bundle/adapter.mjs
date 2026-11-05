@@ -1,9 +1,20 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { normalize, initial } from "./dist/core/model.js";
 import { diagnose } from "./dist/core/planner.js";
 import { FileStore } from "./dist/store/file-store.js";
 import { Scheduler } from "./dist/dispatcher/scheduler.js";
+import { WakeQueue } from "./dist/dispatcher/wake-queue.js";
+
+function compactProgress(taskId, progress) {
+  if (typeof progress.summary !== "string") return progress;
+  const chars = Array.from(progress.summary), truncated = chars.length > 300;
+  return { ...progress, summary: truncated ? chars.slice(0, 299).join("") + "…" : progress.summary,
+    summaryChars: chars.length, summaryTruncated: truncated,
+    ...(truncated ? { summaryRead: { taskId } } : {}) };
+}
+
+const runInfo = ({ summary: _summary, rework: _rework, ...run }) => run;
 
 // 仅这一层认识宿主 Agent；核心可以由其他平台复用。
 //
@@ -22,16 +33,55 @@ export function install(ctx, config, { defineTool, z }) {
   // 逻辑等待属于持久成员/session；live Agent只是当前回合的载体。
   const waiting = new Map();
   const memberNames = new WeakMap();
-  const wakeJobs = new Set();
   const shutdown = new AbortController();
   let disposed = false;
   let servicePromise;
+  async function readJson(path, label) {
+    let text;
+    try { text = await readFile(path, "utf8"); }
+    catch (error) {
+      const reason = ["ENOENT", "ENOTDIR"].includes(error.code) ? "未找到，请确认路径或先创建文件"
+        : ["EACCES", "EPERM"].includes(error.code) ? "无法读取，请检查权限" : `无法读取：${error.message}`;
+      throw new Error(`${label}${reason}：${path}`, { cause: error });
+    }
+    try { return JSON.parse(text.replace(/^\uFEFF/, "")); }
+    catch (error) { throw new Error(`${label} JSON 格式错误：${path}；${error.message}`, { cause: error }); }
+  }
+
+  // 初始化失败不锁死插件；修正文件后，可由下一次明确工具调用重试。
   const service = () => servicePromise ??= (async () => {
-    const project = normalize(JSON.parse(await readFile(resolve(config.projectFile), "utf8")));
+    const project = normalize(await readJson(resolve(config.projectFile), "任务文件"));
     const errors = diagnose(project);
     if (errors.length) throw new Error(errors.join("\n"));
-    return new Scheduler(await FileStore.open(resolve(config.stateFile), initial(project)), config.receiptTimeoutMs ?? 120000);
-  })();
+    const path = resolve(config.stateFile);
+    try { return new Scheduler(await FileStore.open(path, initial(project)), config.receiptTimeoutMs ?? 120000); }
+    catch (error) {
+      const reason = ["EACCES", "EPERM"].includes(error.code) ? "无法读写，请检查权限"
+        : ["ENOTDIR", "EISDIR"].includes(error.code) ? "路径不是可用文件，请检查目录层级"
+        : error.code === "ENOSPC" ? "磁盘空间不足" : `无法打开：${error.message}`;
+      throw new Error(`状态存储${reason}：${path}`, { cause: error });
+    }
+  })().catch(error => { servicePromise = undefined; throw error; });
+
+  async function tasksInput(args) {
+    if ((args.tasks !== undefined) === (args.tasksFile !== undefined)) {
+      throw new Error("add-tasks 需要 tasks 或 tasksFile，二选一");
+    }
+    let value;
+    if (args.tasksFile !== undefined) {
+      if (typeof args.tasksFile !== "string" || !args.tasksFile.trim()) throw new Error("tasksFile 需要任务 JSON 文件路径");
+      value = await readJson(resolve(dirname(resolve(config.projectFile)), args.tasksFile), "追加任务文件");
+    } else {
+      if (typeof args.tasks !== "string") throw new Error("tasks 需要 JSON 文本；也可用 tasksFile 指定文件");
+      try { value = JSON.parse(args.tasks); }
+      catch (error) { throw new Error(`追加任务 JSON 格式错误：${error.message}`, { cause: error }); }
+    }
+    const tasks = Array.isArray(value) ? value : [value];
+    if (!tasks.length || tasks.some(task => !task || typeof task !== "object" || Array.isArray(task))) {
+      throw new Error("追加任务需要非空任务数组或单任务对象");
+    }
+    return tasks;
+  }
 
   function liveLead(root) {
     return !disposed && ctx.agents.list().includes(root)
@@ -59,9 +109,13 @@ export function install(ctx, config, { defineTool, z }) {
   }
 
   // 只响应当前工具中的真实状态变更；不轮询、不创建成员、不自动重试。
-  function wakeReady(root, signal) {
+  function wakeReady(root) {
     if (!config.autoDispatch || !liveLead(root)) return Promise.resolve(undefined);
-    const job = (async () => {
+    return wakeQueue.request(root);
+  }
+
+  const wakeQueue = new WakeQueue(async root => {
+      if (!liveLead(root)) return undefined;
       const s = await service(), result = { dispatched: [], errors: [] };
       const candidates = s.snapshot().project.agents.filter(agent => waiting.has(agent.id))
         .flatMap(agent => s.plan(agent.id).segments);
@@ -86,24 +140,21 @@ export function install(ctx, config, { defineTool, z }) {
         // 先移除等待标记，避免两个同时交付事件重复派发同一成员。
         if (waiting.get(agentId) !== entry || !waiting.delete(agentId)) return;
         try {
-          const delivery = await s.dispatch(agentId, d => send(root,
-            AbortSignal.any([signal ?? shutdown.signal, shutdown.signal]), d));
+          // 状态已提交，自动唤醒属于插件；单个报告工具取消不取消共享扫描。
+          const delivery = await s.dispatch(agentId, d => send(root, shutdown.signal, d));
           const phase = s.snapshot().runs.find(run => run.dispatchId === delivery.dispatchId)?.phase;
           result.dispatched.push({ agentId, taskId: delivery.taskId, dispatchId: delivery.dispatchId, phase });
         } catch (error) {
           // 上游交付已经提交；唤醒失败不能把它报成失败或诱使模型重复提交。
-          result.errors.push({ agentId, error: String(error?.message ?? error) });
+          // 同一就绪任务已被其他成员或next领取属于正常竞争，继续等待。
+          if (error.code !== "NO_READY_TASK") result.errors.push({ agentId, error: String(error?.message ?? error) });
           if (!disposed && !s.snapshot().runs.some(run => run.agentId === agentId && run.phase !== "finished")) {
             waiting.set(agentId, entry); // 尚未占用/发送时，保留等待，留给后续真实事件或手动派发。
           }
         }
       }));
       return result;
-    })();
-    wakeJobs.add(job);
-    job.finally(() => wakeJobs.delete(job)).catch(() => {});
-    return job;
-  }
+  });
 
   // 只接受本调度团队的 live 调用者；auto 模式由第一次合法调用确定唯一 Lead。
   function member(agent, leadOnly = false) {
@@ -147,12 +198,26 @@ export function install(ctx, config, { defineTool, z }) {
   }
 
   const definitions = [
-    tool("scheduler_status", "查看当前任务、执行段与等待原因；只返回紧凑状态。", {}, async (_args, exec) => {
-      member(exec.agent); const s = await service(); await s.expire();
+    tool("scheduler_status", "空参查看概览，摘要最多300字符；传taskId读取该任务完整摘要与最近运行。详情不检查回执到期，首次调用仍会初始化状态。", {
+      taskId: textParam("可选：读取指定任务详情与完整摘要")
+    }, async (args, exec) => {
+      member(exec.agent); const s = await service();
+      if (args.taskId !== undefined) {
+        if (typeof args.taskId !== "string" || !args.taskId.trim()) throw new Error("需要有效 taskId");
+        const state = s.snapshot(), task = state.project.tasks.find(task => task.id === args.taskId);
+        if (!task) throw new Error(`未知任务：${args.taskId}`);
+        const run = state.runs.filter(run => run.taskId === task.id).at(-1);
+        const reworks = state.runs.filter(run => run.taskId === task.id && run.rework)
+          .map(run => ({ attemptId: run.attemptId, summary: run.summary, ...run.rework }));
+        return { revision: state.revision, taskId: task.id, task, progress: state.progress[task.id],
+          runs: run ? [runInfo(run)] : [], ...(reworks.length ? { reworks } : {}) };
+      }
+      await s.expire();
       const state = s.snapshot();
-      return { revision: state.revision, ...s.plan(), tasks: state.progress,
+      return { revision: state.revision, ...s.plan(), tasks: Object.fromEntries(Object.entries(state.progress)
+        .map(([taskId, progress]) => [taskId, compactProgress(taskId, progress)])),
         autoDispatch: config.autoDispatch === true, ...waitingStatus(),
-        runs: state.runs.filter(r => r.phase !== "finished") };
+        runs: state.runs.filter(r => r.phase !== "finished").map(runInfo) };
     }),
     tool("scheduler_next", "专项执行者领取下一任务。收到委托可传 dispatchId 确认；当前项完成后空参领取下一项。", {
       dispatchId: textParam("收到的委托 ID")
@@ -166,7 +231,7 @@ export function install(ctx, config, { defineTool, z }) {
         if (args.dispatchId && args.dispatchId !== run.dispatchId) throw new Error("dispatchId 与当前委托不匹配");
         waiting.delete(m.name);
         await s.acknowledge(m.name, run);
-        return { ...run, phase: "active", task: state.project.tasks.find(t => t.id === run.taskId) };
+        return s.delivery(run);
       }
       if (args.dispatchId) throw new Error("旧委托已结束，不再执行");
       const worked = state.runs.some(r => r.agentId === m.name && r.phase === "finished");
@@ -186,16 +251,21 @@ export function install(ctx, config, { defineTool, z }) {
       catch (error) {
         // 交付唤醒与成员自行领取同时发生时，采用已分配的同一run。
         delivery = s.snapshot().runs.find(r => r.agentId === m.name && r.phase !== "finished");
-        if (!delivery) throw error;
+        if (!delivery) {
+          if (error.code !== "NO_READY_TASK") throw error;
+          // 其他成员先领走了共享任务；本成员仍须保留后续唤醒入口。
+          waitForMember(m, exec.agent);
+          return { waiting: true, reason: "暂无属于你的连续任务" };
+        }
       }
       await s.acknowledge(m.name, delivery);
-      return delivery;
+      return s.delivery(delivery);
     }),
     tool("scheduler_report", "报告当前委托结果。普通任务直接完成；声明 review 的任务等待检查点验收。", {
       dispatchId: textParam("当前委托 ID", true),
       summary: textParam("简短结果与检查依据", true),
       status: textParam("completed（默认）、checkpoint、blocked 或 failed"),
-      outputs: textParam('产物引用 JSON，如 {"api":"docs/api.md"}')
+      outputs: textParam('产物引用 JSON；值为非空字符串或非空字符串数组，如 {"api":"docs/api.md"}')
     }, async (args, exec) => {
       const m = member(exec.agent), s = await service();
       const run = s.snapshot().runs.find(r => r.dispatchId === args.dispatchId && r.agentId === m.name);
@@ -204,12 +274,15 @@ export function install(ctx, config, { defineTool, z }) {
         summary: args.summary, status: args.status ?? "completed",
         outputs: args.outputs ? JSON.parse(args.outputs) : undefined
       });
-      const wakeups = await wakeReady(m.root, exec.signal);
+      const wakeups = await wakeReady(m.root);
       return { taskId: run.taskId, state: s.snapshot().progress[run.taskId], ...(wakeups ? { wakeups } : {}) };
     }),
-    tool("scheduler_manage", "Lead 管理：spawn、dispatch、accept、approve、pause、resume、retry、resolve-stopped。停止对账前先确认执行者已停止。", {
+    tool("scheduler_manage", "Lead 管理：spawn、dispatch、accept、rework、approve、pause、resume、retry、resolve-stopped、add-tasks。rework填写反馈退回待验收任务的未完成部分，保留已接受交付。停止对账前先确认执行者已停止。", {
       action: textParam("管理动作", true), target: textParam("执行者名称或任务 ID"),
-      output: textParam("仅验收指定中间产物时填写")
+      output: textParam("仅验收指定中间产物时填写"),
+      feedback: textParam("rework：具体返工反馈，不能留空"),
+      tasks: textParam("add-tasks：单任务对象或任务数组的 JSON 文本；与 tasksFile 二选一"),
+      tasksFile: textParam("add-tasks：任务 JSON 文件路径，相对 projectFile 所在目录；也可用绝对路径")
     }, async (args, exec) => {
       const m = member(exec.agent, true); const s = await service();
       if (args.action === "spawn") {
@@ -226,13 +299,29 @@ export function install(ctx, config, { defineTool, z }) {
       }
       if (args.action === "dispatch") {
         if (!args.target) throw new Error("dispatch 需要执行者名称");
+        const entry = waiting.get(args.target);
         waiting.delete(args.target);
-        return s.dispatch(args.target, delivery => send(exec.agent, exec.signal, delivery));
+        try { return await s.dispatch(args.target, delivery => send(exec.agent, exec.signal, delivery)); }
+        catch (error) {
+          // 尚未形成委托的派发失败不应取消原来的等待；已有run则留给确认或对账。
+          if (entry && !disposed && !waiting.has(args.target)
+            && !s.snapshot().runs.some(run => run.agentId === args.target && run.phase !== "finished")) {
+            waiting.set(args.target, entry);
+          }
+          throw error;
+        }
+      }
+      if (args.action === "add-tasks") {
+        const tasks = await tasksInput(args);
+        await s.addTasks(tasks);
+        const wakeups = await wakeReady(m.root);
+        return { revision: s.snapshot().revision, added: tasks.length, ...(wakeups ? { wakeups } : {}) };
       }
       if (args.action === "accept") await s.accept(args.target, args.output);
+      else if (args.action === "rework") await s.rework(args.target, args.feedback);
       else if (["approve", "pause", "resume", "retry", "resolve-stopped"].includes(args.action)) await s.control(args.action, args.target);
       else throw new Error("未知管理动作");
-      const wakeups = await wakeReady(m.root, exec.signal);
+      const wakeups = await wakeReady(m.root);
       return { revision: s.snapshot().revision, ...(wakeups ? { wakeups } : {}) };
     })
   ];
@@ -267,7 +356,8 @@ export function install(ctx, config, { defineTool, z }) {
     for (const dispose of off) if (typeof dispose === "function") dispose();
     for (const disposers of installed.values()) for (const dispose of disposers) dispose();
     installed.clear();
-    await Promise.allSettled([...wakeJobs]);
-    if (servicePromise) await (await servicePromise).store.close();
+    await wakeQueue.idle();
+    const s = await servicePromise?.catch(() => undefined);
+    if (s) await s.store.close();
   };
 }

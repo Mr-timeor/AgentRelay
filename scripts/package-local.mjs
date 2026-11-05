@@ -40,12 +40,14 @@ export async function buildLocalPackage(outputParent = join(root, ".scheduler/re
   await compile(join(core, "dist"));
   await writeFile(join(core, "package.json"), JSON.stringify({
     name: metadata.name, version: metadata.version, private: true, type: "module",
+    license: metadata.license,
     engines: metadata.engines, bin: { "task-scheduler": "./dist/cli.js" }
   }, null, 2) + "\n");
 
   const bundle = join(target, "harness/bundle"), view = join(target, "harness/view-bundle");
   await mkdir(bundle, { recursive: true });
   await mkdir(view, { recursive: true });
+  for (const folder of [target, core, bundle, view]) await cp(join(root, "LICENSE"), join(folder, "LICENSE"));
   for (const file of ["package.json", "cordis.patch.yml"]) {
     await cp(join(root, "harness/bundle", file), join(bundle, file));
   }
@@ -65,20 +67,20 @@ export async function buildLocalPackage(outputParent = join(root, ".scheduler/re
     await cp(join(root, "fixtures/benchmarks", file), join(target, "fixtures/benchmarks", file));
   }
   await mkdir(join(target, "docs"));
-  for (const file of ["本地分发与验收.md", "使用与接入.md", "只读图接入.md", "接口与数据契约.md", "duration-01评审.md", "自动派发与唤醒.md"]) {
+  for (const file of ["快速开始.md", "设计方案.md", "调度算法.md", "接口与数据契约.md", "离线评测.md"]) {
     await cp(join(root, "docs", file), join(target, "docs", file));
   }
   await writeFile(join(target, "README.md"), `# Scheduler 本地验证包 ${metadata.version}\n\n` +
     "需要Node.js 22或更新版本。核心无需安装npm依赖；两个DSH插件由宿主提供peer依赖。\n\n" +
-    "在本目录执行：\n\n```powershell\nnode core/dist/cli.js plan fixtures/development.json\n" +
+    "在本目录执行：\n\n```powershell\nnode core/dist/cli.js check fixtures/development.json\nnode core/dist/cli.js plan fixtures/development.json\n" +
     "node core/dist/cli.js graph fixtures/development.json flow.html\n" +
     "node core/dist/benchmark/run.js fixtures/benchmarks\n```\n\n" +
-    "插件分别位于harness/bundle和harness/view-bundle，默认禁用。宿主安装、配置与回退见docs/本地分发与验收.md。\n\n" +
+    "插件分别位于harness/bundle和harness/view-bundle，默认禁用。通过宿主的本地bundle安装入口安装对应目录，随后配置agent-team和项目路径；步骤见docs/快速开始.md。此分发目录的根目录供离线CLI使用。\n\n" +
     "用量只记录，不设预算卡点；没有就绪任务则结束回合，未知投递不自动重发，失败不自动重试。\n\n" +
-    "这是本地验证目录，未公开发布；项目许可证未决定。未包含宿主、node_modules、真实会话、运行状态或凭据。\n");
+    `这是本地验证目录，未做正式版本发布；采用${metadata.license}许可证，完整条款见LICENSE。未包含宿主、node_modules、真实会话、运行状态或凭据。\n`);
   const manifest = {
     name: metadata.name, version: metadata.version, createdAt: new Date().toISOString(),
-    kind: "local-validation", licenseStatus: "undecided", node: metadata.engines.node,
+    kind: "local-validation", license: metadata.license, licenseStatus: "declared", node: metadata.engines.node,
     hostBaseline: "0.2.1-rc.2", files: await listFiles(target)
   };
   // manifest最后写入；缺少它表示组装尚未完成。

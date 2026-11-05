@@ -20,6 +20,8 @@ export async function startViewExport(options: ViewExportOptions) {
     throw new Error("流程图输出不能覆盖任务或状态文件");
   }
   await mkdir(dirname(graphFile), { recursive: true });
+  // 图可先于调度器启动；仅建立监听目录，不创建或修改状态文件。
+  await mkdir(dirname(stateFile), { recursive: true });
   let stopped = false, timer: ReturnType<typeof setTimeout> | undefined;
   let tail: Promise<unknown> = Promise.resolve();
   const refresh = () => {

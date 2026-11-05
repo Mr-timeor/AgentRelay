@@ -5,6 +5,7 @@ import type { State } from "../core/model.js";
 
 export class FileStore {
   private tail: Promise<unknown> = Promise.resolve();
+  private closing?: Promise<void>;
   private state!: State;
   private static paths = new Set<string>();
   private constructor(readonly path: string) {}
@@ -36,6 +37,7 @@ export class FileStore {
   }
   snapshot(): State { return structuredClone(this.state); }
   change<T>(fn: (draft: State) => T): Promise<T> {
+    if (this.closing) return Promise.reject(new Error("状态存储已关闭，不能再提交修改"));
     const job = this.tail.then(async () => {
       const draft = this.snapshot(), result = fn(draft);
       draft.revision++;
@@ -58,8 +60,9 @@ export class FileStore {
       await rename(temp, this.path);
     } finally { await unlink(temp).catch(() => {}); }
   }
-  async close(): Promise<void> {
-    await this.tail;
-    FileStore.paths.delete(process.platform === "win32" ? this.path.toLowerCase() : this.path);
+  close(): Promise<void> {
+    return this.closing ??= this.tail.then(() => {
+      FileStore.paths.delete(process.platform === "win32" ? this.path.toLowerCase() : this.path);
+    });
   }
 }

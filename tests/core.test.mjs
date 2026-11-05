@@ -148,3 +148,30 @@ test("坏文件不覆盖；同进程重复写者拒绝", async ctx => {
   await assert.rejects(FileStore.open(bad, initial(project([]))));
   assert.equal(await readFile(bad, "utf8"), "broken");
 });
+test("交付上下文自动带入：specFile合规检查与直接前置产物/摘要带入", async ctx => {
+  assert.throws(() => normalize({ name: "x", agents: [{ id: "dev" }], tasks: [{ id: "a", specFile: "/abs/path.md" }] }), /任务卡使用项目相对路径/);
+  assert.throws(() => normalize({ name: "x", agents: [{ id: "dev" }], tasks: [{ id: "a", specFile: "../out.md" }] }), /任务卡超出项目根目录/);
+
+  const { scheduler: s } = await setup(ctx, [
+    t("a", { outputs: ["api"], specFile: "docs/tasks/a.md" }),
+    t("b", { dependsOn: [{ taskId: "a", output: "api" }], specFile: "docs/tasks/b.md" })
+  ]);
+  const da = await s.dispatch("dev", async () => {});
+  assert.equal(da.specFile, "docs/tasks/a.md");
+  assert.deepEqual(da.dependencies, []);
+  await s.acknowledge("dev", da);
+  await s.report("dev", da, { status: "completed", summary: "接口已写好", outputs: { api: "docs/api.json" } });
+
+  const db = await s.dispatch("dev", async () => {});
+  assert.equal(db.taskId, "b");
+  assert.equal(db.specFile, "docs/tasks/b.md");
+  assert.deepEqual(db.dependencies, [{
+    taskId: "a",
+    output: "api",
+    reference: "docs/api.json",
+    summary: "接口已写好"
+  }]);
+  const delivery = s.delivery(s.snapshot().runs.find(r => r.taskId === "b"));
+  assert.deepEqual(delivery.dependencies, db.dependencies);
+  assert.equal(delivery.specFile, "docs/tasks/b.md");
+});

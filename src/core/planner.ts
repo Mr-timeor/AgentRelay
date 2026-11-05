@@ -66,6 +66,33 @@ function unlocks(project: Project, id: string): number {
   }
   visit(id); return seen.size;
 }
+// 以指定首项延伸建议段；也用于给已领取任务重建上下文，不改变真实占用。
+export function segmentFrom(state: State, first: Task, agentId: string, reserved = new Set<string>()): Segment {
+  const virtual = structuredClone(state), tasks: string[] = [];
+  virtual.runs = virtual.runs.filter(r => r.taskId !== first.id || r.agentId !== agentId || r.phase === "finished");
+  let next: Task | undefined = first, stop = "等待外部前置或没有连续任务";
+  while (next && tasks.length < state.project.maxSegment) {
+    tasks.push(next.id); reserved.add(next.id);
+    if (next.review) { stop = "等待检查点验收"; break; }
+    virtual.progress[next.id].status = "completed";
+    for (const output of next.outputs) virtual.progress[next.id].outputs[output] = { accepted: true, reference: "仅规划" };
+    const previous: string = next.id;
+    next = state.project.tasks.filter(t => !reserved.has(t.id) && canOwn(state, t, agentId)
+      && t.dependsOn.some(d => d.taskId === previous) && !reasons(virtual, t).length)
+      .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
+  }
+  if (tasks.length === state.project.maxSegment) stop = "达到段长上限";
+  const checkpoints: Segment["checkpoints"] = [];
+  for (const id of tasks) {
+    const consumers = state.project.tasks.filter(t => !tasks.includes(t.id) && t.dependsOn.some(d => d.taskId === id));
+    for (const key of new Set(consumers.flatMap(t => t.dependsOn.filter(d => d.taskId === id).map(d => d.output)))) {
+      checkpoints.push({ taskId: id, ...(key ? { output: key } : {}),
+        consumers: consumers.filter(t => t.dependsOn.some(d => d.taskId === id && d.output === key)).map(t => t.id) });
+    }
+  }
+  return { agentId, tasks, checkpoints, stop };
+}
+
 export function plan(state: State): { diagnostics: string[]; ready: string[]; segments: Segment[]; blocked: Record<string, string[]> } {
   const diagnostics = diagnose(state.project);
   if (diagnostics.length) return { diagnostics, ready: [], segments: [], blocked: {} };
@@ -79,28 +106,7 @@ export function plan(state: State): { diagnostics: string[]; ready: string[]; se
       && !chosen.some(c => conflicts(t.resources, c.resources)));
     if (!first) continue;
     chosen.push(first);
-    const virtual = structuredClone(state), tasks: string[] = [];
-    let next: Task | undefined = first, stop = "等待外部前置或没有连续任务";
-    while (next && tasks.length < state.project.maxSegment) {
-      tasks.push(next.id); reserved.add(next.id);
-      if (next.review) { stop = "等待检查点验收"; break; }
-      virtual.progress[next.id].status = "completed";
-      for (const output of next.outputs) virtual.progress[next.id].outputs[output] = { accepted: true, reference: "仅规划" };
-      const previous: string = next.id;
-      next = state.project.tasks.filter(t => !reserved.has(t.id) && canOwn(state, t, agent.id)
-        && t.dependsOn.some(d => d.taskId === previous) && !reasons(virtual, t).length)
-        .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
-    }
-    if (tasks.length === state.project.maxSegment) stop = "达到段长上限";
-    const checkpoints: Segment["checkpoints"] = [];
-    for (const id of tasks) {
-      const consumers = state.project.tasks.filter(t => !tasks.includes(t.id) && t.dependsOn.some(d => d.taskId === id));
-      for (const key of new Set(consumers.flatMap(t => t.dependsOn.filter(d => d.taskId === id).map(d => d.output)))) {
-        checkpoints.push({ taskId: id, ...(key ? { output: key } : {}),
-          consumers: consumers.filter(t => t.dependsOn.some(d => d.taskId === id && d.output === key)).map(t => t.id) });
-      }
-    }
-    segments.push({ agentId: agent.id, tasks, checkpoints, stop });
+    segments.push(segmentFrom(state, first, agent.id, reserved));
   }
   return { diagnostics, ready: candidates.map(t => t.id), segments, blocked };
 }

@@ -38,3 +38,26 @@ test("图输出不能覆盖权威状态", async t => {
   t.after(() => rm(dir, { recursive: true, force: true }));
   await assert.rejects(startViewExport({ stateFile: join(dir, "state.json"), graphFile: join(dir, "state.json") }), /不能覆盖/);
 });
+
+test("状态目录尚未建立时可先预览，状态首次落盘后自动跟随", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "scheduler-view-first-"));
+  const stateFile = join(dir, "state", "nested", "state.json"), graphFile = join(dir, "views", "flow.html");
+  const projectFile = join(dir, "tasks.json");
+  const project = { agents: [], tasks: [{ id: "a" }] };
+  await writeFile(projectFile, JSON.stringify(project));
+  let exporter;
+  t.after(async () => { await exporter?.close(); await rm(dir, { recursive: true, force: true }); });
+  exporter = await startViewExport({ stateFile, graphFile, projectFile });
+  assert.match(await readFile(graphFile, "utf8"), /revision 0/);
+  await assert.rejects(readFile(stateFile), { code: "ENOENT" });
+  const state = initial(normalize(project));
+  state.revision = 1; state.progress.a.status = "completed";
+  const original = JSON.stringify(state);
+  await writeFile(stateFile + ".tmp", original); await rename(stateFile + ".tmp", stateFile);
+  const until = Date.now() + 3000;
+  while (!(await readFile(graphFile, "utf8")).includes("revision 1")) {
+    if (Date.now() > until) assert.fail("首次状态落盘后没有更新导出图");
+    await new Promise(r => setTimeout(r, 30));
+  }
+  assert.equal(await readFile(stateFile, "utf8"), original);
+});
