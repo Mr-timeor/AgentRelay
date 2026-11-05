@@ -1,82 +1,90 @@
-# Multi-Agent Dynamic Task Scheduler
+# AgentRelay · 接力
 
-面向 DeepSeek Harness 的多 Agent 开发与测试调度插件。一个 Lead 协调多个专项会话，按任务依赖推进工作，并通过只读流程图查看进度。
+面向 **DeepSeek Harness** 的多对话开发与测试调度插件。一个 Lead 协调多个专项对话，按任务依赖推进工作，通过 HTML 流程图查看进度。
 
-专项会话保存执行细节，调度状态保存任务关系、交付物和运行历史。成员完成当前任务后，插件为就绪的后续任务派发委托，恢复等待成员的原有会话。
+安装启用后默认待机。需要协作时发送“加载调度器”，由 Lead 规划任务和专项分工，等全部成员回复就绪后自动开工。
+
+[下载 v0.1.0](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip) · [中文安装说明](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/INSTALL.zh-CN.md) · [SHA256](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip.sha256)
+
+![任务流程图，演示数据按依赖阶段排列，展示状态、执行者与等待原因](docs/images/task-view.png)
+
+## 工作方式
+
+```mermaid
+flowchart LR
+    A[默认待机] --> B[加载调度器]
+    B --> C[规划任务与成员]
+    C --> D[生成任务集和HTML]
+    D --> E[全部成员回复就绪]
+    E --> F[按依赖自动执行]
+```
+
+专项对话保存执行细节，Lead 处理计划、关键验收和异常。任务状态与交付引用保存到项目文件，成员交付后由插件检查下一项工作并唤醒原有会话。
+
+## 安装
+
+下载并解压 Release 中的 ZIP，下载者无需 npm 或重新编译。先备份目标 profile 配置并完整退出 Desktop，再使用宿主提供的 CLI 安装。
+
+```powershell
+dsh plugin --profile desktop add "<解压目录>/harness/bundle"
+```
+
+`dsh` 指 Harness 自带的 CLI，未加入 PATH 时使用其实际启动器路径。profile 名称按实际情况填写，并使用与 Desktop 相同的 DSH_HOME。安装可能建立 junction，需要保留解压后的 bundle 目录。
+
+参考包内 `examples/desktop.patch.yml` 配置 agent-team 服务并启用 `onDemand:true`，完整重启 Harness。默认模式只需主插件，由它在准备任务后维护 HTML。
+
+完整步骤见[下载安装](docs/下载安装.md)。包中的插件标识为 `dynamic-task-scheduler`，项目名称为 AgentRelay。
+
+## 开始使用
+
+在目标项目的会话中发送以下提示，并补充真实需求。
+
+```text
+加载调度器。
+这次要完成的开发和测试任务是：<具体需求>。
+请规划任务依赖、交付物和专项对话分工，生成任务集与HTML，告诉我需要几个专项对话。
+各专项对话先阅读计划并回复自己的分工和已就绪，全部回复后再自动开工。
+完成后汇总实际交付、测试结果和未解决问题。
+```
+
+Lead 根据需求提出成员数量。插件校验计划，生成 `.scheduler/tasks.json`、`state.json` 和 `flow.html`。在 Harness 文件预览中打开 `flow.html`，可搜索、缩放和查看任务详情。
+
+创建成员本身不会解锁任务。每个成员实际回复就绪后，插件才开放派发；此后成员领取、交付并继续下一项，依赖解除时自动恢复等待成员的原会话。配置了 `review:true` 的任务由 Lead 检查交付与测试证据后接受。
+
+任务结束后可让 Lead 卸载调度流程、返回待机，项目文件与历史保留。工具示例见[快速开始](docs/快速开始.md)。
 
 ## 功能
 
-- 检查缺失前置和依赖环，按优先级、下游解锁价值及资源占用选择任务。
-- 融合同一成员可以连续推进的任务，实际领取时逐项检查条件。
-- 依赖解除后自动派发，支持等待成员的原会话唤醒。
-- 传递任务卡、前置产物引用和短摘要，支持追加任务、调整未派发计划、验收与返工。
-- 展示任务依赖、负责人、状态及等待原因，支持搜索、缩放和详情查看。
-- 安装启用后默认待机，通过“加载调度器”开始准备，等全部专项成员回复就绪后自动执行。
+- **依赖调度**。诊断缺失前置和依赖环，按优先级、下游解锁价值与资源占用选择任务。
+- **连续执行**。给出同一成员可连续推进的执行段，实际领取时逐项检查条件。
+- **会话唤醒**。依赖解除后恢复原有专项会话，减少人工转述和重复派发。
+- **交付与返工**。传递任务卡、前置产物引用及短摘要，返工时保留已接受交付与旧报告。
+- **计划调整**。支持追加任务及修改从未派发的任务，保留执行历史。
+- **只读流程图**。展示任务依赖、负责人、状态、等待原因和交付点。
 
-核心使用 Node.js 标准库，独立于模型厂商。当前聊天平台适配器面向 DeepSeek Harness。
+算法采用依赖与资源约束下的贪心列表调度和连续链融合，细节见[调度算法](docs/调度算法.md)。核心独立于模型厂商，目前提供的聊天平台适配器是 DeepSeek Harness。
 
-![演示任务图，按依赖阶段自上而下展示任务与执行者](docs/images/task-view.png)
+## 验证与使用范围
 
-## 当前状态
+v0.1.0 已在 **Windows Desktop 0.2.1-rc.3、Node 24.21.0** 中完成 CLI 安装及两次冷启动验证，本地151项检查通过。启动闭环使用本地 mock，覆盖待机、准备、全员就绪后派发及原会话恢复。
 
-首版功能已冻结。已在 Windows Desktop 0.2.1-rc.3、Node 24.21.0 中通过 CLI 安装、冷启动及本地 mock 启动闭环，本地检查151项通过。自然语言到工具的模型选择、跨机安装和其他宿主版本仍需验证。
+本轮未实测模型对“加载调度器”的自然语言选工具过程，也未直接调用 Desktop 的 `install_bundle` 工具。其他机器与宿主版本需要适配验证。[发布说明](docs/发布说明-v0.1.0.md)
 
-下载包包含已编译插件、配置示例和安装说明。默认安装主调度器 bundle，准备任务后由它维护流程图。固定项目的独立图预览可选用 view bundle，步骤见[下载安装](docs/下载安装.md)。下载与版本信息见[Releases](https://github.com/Mr-timeor/Multi-Agent-Dynamic-Task-Scheduler/releases)。
+当前支持单项目、单 Lead、本地 JSON 状态。文件资源范围依赖成员遵守声明，共享工作区中的实际文件操作由开发流程管理，宿主中断后的未结束运行需要人工对账。
 
-GitHub 仓库 URL 和下载源码的根目录用于获取源码，安装时选择解压或构建产物中的 `harness/bundle`。
+## 开发
 
-## 本地体验
-
-需要 Node.js 22+、npm 和 Git。规划与图导出可独立使用。
+需要 Node.js 22+。生成 ZIP 的命令在 Windows 下运行。
 
 ```sh
-git clone https://github.com/Mr-timeor/Multi-Agent-Dynamic-Task-Scheduler.git
-cd Multi-Agent-Dynamic-Task-Scheduler
+git clone https://github.com/Mr-timeor/AgentRelay.git
+cd AgentRelay
 npm ci
-npm run package:local
-```
-
-构建结果的路径写入 `.scheduler/releases/latest.json`。在 PowerShell 中读取该路径并生成示例图。
-
-```powershell
-$packageInfo = Get-Content -LiteralPath '.scheduler/releases/latest.json' -Raw | ConvertFrom-Json
-$packageRoot = $packageInfo.directory
-node (Join-Path $packageRoot 'core/dist/cli.js') graph fixtures/development.json .scheduler/flow.html
-```
-
-用浏览器打开 `.scheduler/flow.html`。示例只生成任务计划与流程图。
-
-## 接入 DeepSeek Harness
-
-在已配置模型的 Harness 中，通过本地 bundle 安装通道安装 `$packageRoot/harness/bundle`，配置 agent-team 服务并启用插件。默认 `onDemand:true`，待机只显示管理入口。向当前对话说“加载调度器”，模型会调用启动动作，再根据你的任务规划任务集、流程图和专项成员分工。成员数量由 Lead 按工作内容决定。
-
-每个专项成员先阅读计划并回复分工和就绪情况，全部回复后才开放自动派发。完成后可卸载调度流程回到待机，任务与历史继续保存在项目中。[安装、提示词与完整流程](docs/快速开始.md)
-
-| 工具 | 用途 |
-|---|---|
-| `scheduler_status` | 查看启动进度、任务、短摘要、执行段和等待原因 |
-| `scheduler_next` | 准备时回复就绪，开工后领取或确认任务 |
-| `scheduler_report` | 提交结果、产物引用或失败原因 |
-| `scheduler_manage` | Lead 加载、准备或卸载调度流程，创建成员并管理任务 |
-
-## 使用范围
-
-单个安装实例绑定一个项目和一个 Lead，状态保存在本地 JSON。文件资源互斥依靠成员遵守声明的范围。已有运行中断后需要人工对账，长期会话、跨项目调度和共享工作区仍需由使用者管理。
-
-当前算法为贪心列表调度与连续链融合，真实效率、费用和上下文压缩收益仍需在实际项目中评估。[算法说明](docs/调度算法.md)
-
-## 开发与文档
-
-```sh
 npm test
-npm run benchmark
-npm run package:download  # Windows下生成ZIP及SHA256校验文件
+npm run package:download
 ```
 
-- [下载安装](docs/下载安装.md)
-- [快速开始](docs/快速开始.md)
 - [设计方案](docs/设计方案.md)
-- [调度算法](docs/调度算法.md)
 - [接口与数据格式](docs/接口与数据契约.md)
 - [离线评测](docs/离线评测.md)
 
