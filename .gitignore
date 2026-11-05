@@ -5,6 +5,7 @@
 /harness/bundle/dist/
 /harness/view-bundle/dist/
 /.harness-isolated/
+/.harness-startup/
 /.scheduler/
 
 # 内部工作记录保留在本机，公开文档使用白名单

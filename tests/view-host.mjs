@@ -9,6 +9,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const reportFile = process.env.SCHEDULER_VIEW_REPORT ?? join(root, ".scheduler", "view-host-report.json");
 const sourceViewBundle = resolve(process.env.SCHEDULER_VIEW_BUNDLE_DIR || join(root, "harness", "view-bundle"));
 const coldStart = process.env.SCHEDULER_VIEW_COLD_START === "1";
+const legacy = process.argv.includes("--legacy");
 const runId = process.env.SCHEDULER_VIEW_RUN_ID;
 await mkdir(join(root, ".scheduler"), { recursive: true });
 const work = await mkdtemp(join(root, ".scheduler", "view-host-"));
@@ -23,7 +24,7 @@ await cp(sourceViewBundle, join(profile, "node_modules", "dynamic-task-scheduler
 await writeFile(join(profile, "package.json"), JSON.stringify({ name: "scheduler-view-isolated", private: true,
   dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "dynamic-task-scheduler-view"] } } }));
 await writeFile(join(profile, "cordis.yml"), "[]\n");
-await writeFile(join(profile, "cordis.patch.yml"), `- id: dynamic-task-scheduler-view\n  disabled: false\n  config:\n    stateFile: '${stateFile.replaceAll("\\", "/")}'\n    projectFile: '${projectFile.replaceAll("\\", "/")}'\n    graphFile: '${graphFile.replaceAll("\\", "/")}'\n`);
+await writeFile(join(profile, "cordis.patch.yml"), `- id: dynamic-task-scheduler-view\n  disabled: false\n  config:\n${legacy ? "    onDemand: false\n" : ""}    stateFile: '${stateFile.replaceAll("\\", "/")}'\n    projectFile: '${projectFile.replaceAll("\\", "/")}'\n    graphFile: '${graphFile.replaceAll("\\", "/")}'\n`);
 const project = normalize({ name: "隔离只读图", agents: [], tasks: [{ id: "a" }] });
 const state = initial(project);
 const original = JSON.stringify(state);

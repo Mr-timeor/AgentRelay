@@ -1,4 +1,7 @@
-param([string]$Exe = $(if ($env:DSH_DESKTOP_EXE) { $env:DSH_DESKTOP_EXE } else { 'D:\deepseek-harness\desktop\DeepSeek Harness.exe' }))
+param(
+  [string]$Exe = $(if ($env:DSH_DESKTOP_EXE) { $env:DSH_DESKTOP_EXE } else { 'D:\deepseek-harness\desktop\DeepSeek Harness.exe' }),
+  [switch]$Legacy
+)
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $Exe)) { throw "找不到DSH桌面可执行文件：$Exe" }
 $env:ELECTRON_RUN_AS_NODE = '1'
@@ -10,7 +13,9 @@ $reportPath = $resultPrefix + '.json'
 $env:SCHEDULER_VIEW_RUN_ID = $runId
 $env:SCHEDULER_VIEW_REPORT = $reportPath
 $scriptPath = Join-Path $PSScriptRoot 'view-host.mjs'
-$process = Start-Process -FilePath $Exe -ArgumentList ('"{0}"' -f $scriptPath) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput ($resultPrefix + '-stdout.log') -RedirectStandardError ($resultPrefix + '-stderr.log')
+$scriptArguments = '"{0}"' -f $scriptPath
+if ($Legacy) { $scriptArguments += ' --legacy' }
+$process = Start-Process -FilePath $Exe -ArgumentList $scriptArguments -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput ($resultPrefix + '-stdout.log') -RedirectStandardError ($resultPrefix + '-stderr.log')
 if ($null -eq $process) { throw "View host process did not start: $resultPrefix" }
 $process.Refresh()
 $nativeExit = $process.ExitCode

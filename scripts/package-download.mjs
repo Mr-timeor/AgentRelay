@@ -23,8 +23,9 @@ export async function buildDownloadPackage(outputParent = join(root, ".scheduler
   await mkdir(join(packageDirectory, "examples"));
   await cp(join(root, "fixtures/desktop.patch.yml"), join(packageDirectory, "examples/desktop.patch.yml"));
   await writeFile(join(packageDirectory, "README.md"), `# DSH任务调度插件 ${manifest.version}\n\n` +
-    "先阅读安装说明.md。解压后，通过Harness的本地bundle安装通道安装harness/bundle，需要流程图时另装harness/view-bundle。\n\n" +
-    "下载者无需npm依赖或编译。配置示例在examples/desktop.patch.yml，示例任务在fixtures/development.json。填写项目路径后启用插件并完整重启Harness。\n\n" +
+    "先阅读安装说明.md。解压后，通过Harness的本地bundle安装通道安装harness/bundle，启用后默认待机。\n\n" +
+    "下载者无需npm依赖或编译。配置示例在examples/desktop.patch.yml。重启后发送“加载调度器”，告知任务，由Lead生成任务集、HTML和专项分工；全部专项成员就绪后自动开工。\n\n" +
+    "按需模式由主插件维护HTML。harness/view-bundle用于onDemand:false的独立固定项目预览。示例任务在fixtures/development.json。\n\n" +
     "独立CLI需要Node.js 22+，可在本目录运行：\n\n```powershell\nnode core/dist/cli.js check fixtures/development.json\n" +
     "node core/dist/cli.js graph fixtures/development.json flow.html\n```\n\n" +
     "采用MIT许可证，条款见LICENSE。宿主依赖由Harness提供。宿主安装验收结果以对应发布说明为准。\n");

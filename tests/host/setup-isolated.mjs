@@ -7,6 +7,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const isolated = join(root, ".harness-isolated");
 const home = join(isolated, "home");
 const probeUrl = mode => pathToFileURL(join(root, "tests", "host", `probe${mode}.mjs`)).href;
+const legacy = process.argv.includes("--legacy");
 
 async function createProfile(name, { loop, wake = false }) {
   const profile = join(home, "profiles", name);
@@ -77,7 +78,7 @@ async function createProfile(name, { loop, wake = false }) {
 - id: dynamic-task-scheduler
   disabled: false
   config:
-    leadSessionId: auto
+${legacy ? "    onDemand: false\n" : ""}    leadSessionId: auto
     autoDispatch: ${wake}
     projectFile: '${projectFile.replaceAll("\\", "/")}'
     stateFile: '${stateFile.replaceAll("\\", "/")}'

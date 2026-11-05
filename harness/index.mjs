@@ -5,9 +5,11 @@ import { install } from "./adapter.mjs";
 export const name = "dynamic-task-scheduler";
 export const inject = ["agents", "agentTeams", "tools"];
 export const Config = z.object({
+  onDemand: z.boolean().default(true),
   leadSessionId: z.string().default("auto"),
-  projectFile: z.string(),
-  stateFile: z.string(),
+  projectFile: z.string().default(""),
+  stateFile: z.string().default(""),
+  graphFile: z.string().default(""),
   provider: z.string().default("spawn"),
   autoDispatch: z.boolean().default(false),
   receiptTimeoutMs: z.number().default(120000)

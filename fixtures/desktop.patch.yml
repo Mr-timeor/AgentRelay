@@ -1,5 +1,5 @@
-# 先通过宿主安装两个bundle，再把示例路径换成目标项目的绝对路径。
-# 已有agent-team服务时使用现有行，只安装调度器时省略view配置。
+# 先通过宿主安装harness/bundle，完整重启后由提示词加载。
+# 已有agent-team服务时使用现有行；默认模式由主插件准备计划后维护HTML。
 - insert:
     - id: agent-team
       name: '@deepseek-ai/dsh-experimental-agent-team'
@@ -11,13 +11,5 @@
 - id: dynamic-task-scheduler
   disabled: false
   config:
+    onDemand: true
     leadSessionId: auto
-    autoDispatch: false
-    projectFile: 'D:/projects/my-app/.scheduler/tasks.json'
-    stateFile: 'D:/projects/my-app/.scheduler/state.json'
-- id: dynamic-task-scheduler-view
-  disabled: false
-  config:
-    projectFile: 'D:/projects/my-app/.scheduler/tasks.json'
-    stateFile: 'D:/projects/my-app/.scheduler/state.json'
-    graphFile: 'D:/projects/my-app/.scheduler/flow.html'

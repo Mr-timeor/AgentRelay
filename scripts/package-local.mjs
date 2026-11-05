@@ -53,9 +53,10 @@ export async function buildLocalPackage(outputParent = join(root, ".scheduler/re
   }
   await cp(join(root, "harness/index.mjs"), join(bundle, "index.mjs"));
   await writeFile(join(bundle, "adapter.mjs"), await adapterSource(root));
-  for (const file of ["package.json", "index.mjs", "cordis.patch.yml"]) {
+  for (const file of ["package.json", "cordis.patch.yml"]) {
     await cp(join(root, "harness/view-bundle", file), join(view, file));
   }
+  await cp(join(root, "harness/view-index.mjs"), join(view, "index.mjs"));
   await cp(join(core, "dist"), join(bundle, "dist"), { recursive: true });
   for (const folder of ["core", "ui"]) {
     await cp(join(core, "dist", folder), join(view, "dist", folder), { recursive: true });

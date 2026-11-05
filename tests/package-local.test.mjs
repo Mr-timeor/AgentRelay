@@ -88,4 +88,8 @@ test("隔离宿主准备：可选择分发副本，不回退使用仓库插件",
   const contextProject = JSON.parse(await readFile(join(scriptRoot, ".harness-isolated/project-loop.json"), "utf8"));
   assert.equal(contextProject.tasks.find(t => t.id === "A1").specFile, "docs/tasks.md#A1");
   assert.deepEqual(contextProject.tasks.find(t => t.id === "A2").dependsOn, ["A1", { taskId: "A1", output: "api" }]);
+  await exec(process.execPath, [resolve(scriptRoot, "tests/host/setup-isolated.mjs"), "--legacy"], {
+    cwd: scriptRoot, env: { ...process.env, SCHEDULER_BUNDLE_DIR: custom }
+  });
+  assert.match(await readFile(join(scriptRoot, ".harness-isolated/home/profiles/scheduler-test/cordis.patch.yml"), "utf8"), /onDemand: false/);
 });

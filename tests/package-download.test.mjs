@@ -50,8 +50,8 @@ test("下载ZIP：解压迁移后两个bundle完整，CLI无需源码，中文�
   }
   assert.deepEqual(Object.keys(expected.fileHashes).sort(), [...manifest.files, "manifest.json"].sort());
   assert.ok(!manifest.files.some(file => /node_modules|\.scheduler|\.pi\/|trials\/|接入结果|项目记录/.test(file)));
-  assert.match(await readFile(join(folder, "安装说明.md"), "utf8"), /无需克隆源码/);
-  assert.match(await readFile(join(folder, "examples/desktop.patch.yml"), "utf8"), /autoDispatch: false/);
+  assert.match(await readFile(join(folder, "安装说明.md"), "utf8"), /无需 npm 或重新构建/);
+  assert.match(await readFile(join(folder, "examples/desktop.patch.yml"), "utf8"), /onDemand: true/);
   for (const file of manifest.files.filter(file => file.endsWith(".md"))) {
     const text = await readFile(join(folder, file), "utf8");
     for (const match of text.matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g)) {
