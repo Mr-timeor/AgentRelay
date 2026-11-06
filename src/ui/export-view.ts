@@ -1,9 +1,10 @@
 import { watch } from "node:fs";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { renderGraph } from "./graph.js";
 import { readViewState } from "./snapshot.js";
+import { replaceOutput } from "./replace-output.js";
 
 export interface ViewExportOptions {
   stateFile: string;
@@ -13,7 +14,7 @@ export interface ViewExportOptions {
 }
 
 // 宿主现有Files / Document Preview负责显示与文件刷新；这里不启动HTTP服务。
-export async function startViewExport(options: ViewExportOptions) {
+export async function startViewExport(options: ViewExportOptions, replace = replaceOutput) {
   const stateFile = resolve(options.stateFile), graphFile = resolve(options.graphFile);
   const key = (p: string) => process.platform === "win32" ? p.toLowerCase() : p;
   if (key(stateFile) === key(graphFile) || (options.projectFile && key(resolve(options.projectFile)) === key(graphFile))) {
@@ -29,7 +30,7 @@ export async function startViewExport(options: ViewExportOptions) {
       if (stopped) return;
       const state = await readViewState(stateFile, options.projectFile);
       const html = renderGraph(state), temp = `${graphFile}.${randomUUID()}.tmp`;
-      try { await writeFile(temp, html, "utf8"); await rename(temp, graphFile); }
+      try { await writeFile(temp, html, "utf8"); await replace(temp, graphFile); }
       finally { await unlink(temp).catch(() => {}); }
       return { revision: state.revision, graphFile };
     });
