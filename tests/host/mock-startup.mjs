@@ -58,8 +58,9 @@ export function decideStartup(messages, options = {}) {
   const actor = actorOf(messages);
   const current = decisionMessages(messages);
   if (actor === "lead") {
-    const index = current.findLastIndex(message => message.role === "user");
-    const match = textOf(current[index]?.content).match(/^AGENTRELAY_PROBE_COMMAND:(\{[\s\S]*\})$/u);
+    const index = current.findLastIndex(message => message.role === "user"
+      && /^AGENTRELAY_PROBE_COMMAND:/u.test(textOf(message.content).trim()));
+    const match = index < 0 ? undefined : textOf(current[index].content).trim().match(/^AGENTRELAY_PROBE_COMMAND:(\{[\s\S]*\})$/u);
     const command = match ? parseJson(match[1]) : undefined;
     if (command?.tool === "scheduler_manage" && command.args && !toolCalls(current.slice(index + 1)).length) {
       return { tool: command.tool, args: command.args };

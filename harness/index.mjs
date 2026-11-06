@@ -17,7 +17,6 @@ export const Config = z.object({
 
 export function apply(ctx, config) {
   const dispose = install(ctx, config, { defineTool, z });
-  ctx.effect(() => () => {
-    void dispose().catch(error => console.error("scheduler dispose:", error));
-  }, "scheduler.tools");
+  // 宿主会等待清理Promise；不能用void丢弃，否则状态锁尚未释放就会完成卸载。
+  ctx.effect(() => dispose, "scheduler.tools");
 }

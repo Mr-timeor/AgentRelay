@@ -62,3 +62,13 @@ test("维护版启动mock显式提交文件证据，待验收后进入等待且�
   assert.deepEqual(decideStartup(reviewed, { fileEvidence: true }), { tool: "scheduler_next", args: {} });
   assert.equal(decideStartup([...reviewed, ...response("scheduler_next", {}, { waiting: true })], { fileEvidence: true }).tool, undefined);
 });
+
+test("宿主在probe命令后追加上下文时仍识别原命令，执行后通知不触发重放", () => {
+  const args = { action: "load" };
+  const messages = [{ role: "user", content: "AGENTRELAY_PROBE_COMMAND:" + JSON.stringify({ tool: "scheduler_manage", args }) },
+    { role: "user", content: "当前工作区已准备好，这是宿主追加的上下文。" }];
+  assert.deepEqual(decideStartup(messages), { tool: "scheduler_manage", args });
+  const completed = [...messages, ...response("scheduler_manage", args, { startup: { phase: "planning" } }),
+    { role: "user", content: "成员状态通知" }];
+  assert.equal(decideStartup(completed).tool, undefined);
+});
