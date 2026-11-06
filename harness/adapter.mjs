@@ -15,7 +15,7 @@ function compactProgress(taskId, progress) {
     ...(truncated ? { summaryRead: { taskId } } : {}) };
 }
 
-const runInfo = ({ summary: _summary, rework: _rework, ...run }) => run;
+const runInfo = ({ summary: _summary, rework: _rework, outputs: _outputs, tests: _tests, ...run }) => run;
 
 // 仅这一层认识宿主 Agent；核心可以由其他平台复用。
 //
@@ -33,6 +33,7 @@ export function install(ctx, config, { defineTool, z }) {
   let boundLeadId = onDemand ? undefined : explicitLead;
   let phase = onDemand ? "standby" : "running";
   let paths = { projectFile: config.projectFile, stateFile: config.stateFile, graphFile: config.graphFile };
+  let workspaceRoot;
   let plannedAgents = [], view;
   const ready = new Map();
   const installed = new Map();
@@ -68,7 +69,7 @@ export function install(ctx, config, { defineTool, z }) {
     if (errors.length) throw new Error(errors.join("\n"));
     if (onDemand && (!project.tasks.length || !project.agents.length)) throw new Error("请先提供具体任务和专项成员计划");
     const path = resolve(paths.stateFile);
-    try { return new Scheduler(await FileStore.open(path, initial(project)), config.receiptTimeoutMs ?? 120000); }
+    try { return new Scheduler(await FileStore.open(path, initial(project)), config.receiptTimeoutMs ?? 120000, workspaceRoot); }
     catch (error) {
       const reason = ["EACCES", "EPERM"].includes(error.code) ? "无法读写，请检查权限"
         : ["ENOTDIR", "EISDIR"].includes(error.code) ? "路径不是可用文件，请检查目录层级"
@@ -93,6 +94,7 @@ export function install(ctx, config, { defineTool, z }) {
     const keys = Object.values(selected).map(path => process.platform === "win32" ? path.toLowerCase() : path);
     if (new Set(keys).size !== 3) throw new Error("任务、状态和HTML需要不同文件路径");
     paths = selected;
+    workspaceRoot = resolve(workspace);
     phase = "planning";
     bindLead(String(m.root.id));
     return { ...startupResult(), instructions: "请先了解用户的开发测试任务。由当前Lead规划任务依赖、文件范围及专项成员，使用prepare提交完整project JSON（含name、agents和tasks）；也可先写入返回的projectFile，再调用prepare读取。成员数量按需要声明。若任务文件已存在，prepare不传project恢复原任务，再在开工后追加新需求。此时只做计划；prepare会保存任务文件、生成HTML并返回分工，然后按返回列表spawn专项成员。" };
@@ -245,6 +247,10 @@ export function install(ctx, config, { defineTool, z }) {
     if (onDemand && phase === "standby") throw new Error("请先说加载调度器并调用load");
     if (boundLeadId === undefined) bindLead(String(m.root.id));
     if (String(m.root.id) !== boundLeadId) throw new Error("此调度器已绑定另一个 Lead");
+    if (!onDemand && workspaceRoot === undefined) {
+      const cwd = m.root.session?.header.cwd;
+      workspaceRoot = typeof cwd === "string" && isAbsolute(cwd) ? resolve(cwd) : process.cwd();
+    }
     if (leadOnly && m.role !== "lead") throw new Error("此动作仅限 Lead");
     if (m.role === "teammate") memberNames.set(agent, m.name);
     return m;
@@ -257,8 +263,7 @@ export function install(ctx, config, { defineTool, z }) {
   }
 
   function refreshTools() {
-    for (const disposers of installed.values()) for (const dispose of disposers) dispose();
-    installed.clear();
+    for (const agent of [...installed.keys()]) attach(agent);
     for (const a of ctx.agents.list()) attach(a);
   }
 
@@ -301,7 +306,8 @@ export function install(ctx, config, { defineTool, z }) {
         const reworks = state.runs.filter(run => run.taskId === task.id && run.rework)
           .map(run => ({ attemptId: run.attemptId, summary: run.summary, ...run.rework }));
         return { revision: state.revision, taskId: task.id, task, progress: state.progress[task.id],
-          runs: run ? [runInfo(run)] : [], ...(reworks.length ? { reworks } : {}) };
+          runs: run ? [{ ...runInfo(run), ...(run.outputs ? { outputs: run.outputs } : {}),
+            ...(run.tests ? { tests: run.tests } : {}) }] : [], ...(reworks.length ? { reworks } : {}) };
       }
       await s.expire();
       const state = s.snapshot();
@@ -381,14 +387,18 @@ export function install(ctx, config, { defineTool, z }) {
       dispatchId: textParam("当前委托 ID", true),
       summary: textParam("简短结果与检查依据", true),
       status: textParam("completed（默认）、checkpoint、blocked 或 failed"),
-      outputs: textParam('产物引用 JSON；值为非空字符串或非空字符串数组，如 {"api":"docs/api.md"}')
+      outputs: textParam('产物引用 JSON；值为非空字符串或非空字符串数组，如 {"api":"docs/api.md"}'),
+      files: textParam('可选文件证据 JSON，如 {"api":["docs/api.md"]}；路径相对当前工作区，插件实际采集大小和SHA-256'),
+      tests: textParam('可选自测记录 JSON 数组：[{"command":"node --test","exitCode":0,"stdout":"logs/test.txt"}]；仅记录，不执行命令')
     }, async (args, exec) => {
       const m = member(exec.agent), s = await service();
       const run = s.snapshot().runs.find(r => r.dispatchId === args.dispatchId && r.agentId === m.name);
       if (!run || m.role !== "teammate") throw new Error("没有属于你的委托");
       await s.report(m.name, run, {
         summary: args.summary, status: args.status ?? "completed",
-        outputs: args.outputs ? JSON.parse(args.outputs) : undefined
+        outputs: args.outputs ? JSON.parse(args.outputs) : undefined,
+        files: args.files !== undefined ? JSON.parse(args.files) : undefined,
+        tests: args.tests !== undefined ? JSON.parse(args.tests) : undefined
       });
       const wakeups = await wakeReady(m.root);
       return { taskId: run.taskId, state: s.snapshot().progress[run.taskId], ...(wakeups ? { wakeups } : {}) };
@@ -475,21 +485,29 @@ export function install(ctx, config, { defineTool, z }) {
   ];
 
   function attach(agent) {
-    if (installed.has(agent)) return;
     const m = ctx.agentTeams.tryMembership(agent);
-    if (!m) return;
-    if (onDemand && phase === "standby") {
-      if (m.role !== "lead" || (explicitLead && String(m.root.id) !== explicitLead)) return;
-      installed.set(agent, definitions.filter(t => t.name === "scheduler_manage").map(t => agent.ctx.tools.register(t)));
-      return;
+    let desired = [];
+    if (m) {
+      if (onDemand && phase === "standby") {
+        if (m.role === "lead" && (!explicitLead || String(m.root.id) === explicitLead)) {
+          desired = definitions.filter(t => t.name === "scheduler_manage");
+        }
+      } else if (boundLeadId !== undefined ? String(m.root.id) === boundLeadId : m.role === "lead") {
+        desired = definitions;
+      }
+      if (m.role === "teammate" && desired.length) memberNames.set(agent, m.name);
     }
-    if (boundLeadId !== undefined) {
-      if (String(m.root.id) !== boundLeadId) return;
-    } else if (m.role !== "lead") {
-      return;
+    // 保留仍可用的原注册。新版DSH按模型步骤固定准入，撤回再注册会使同批调用失效。
+    const registrations = installed.get(agent) ?? new Map();
+    const names = new Set(desired.map(t => t.name));
+    for (const [name, dispose] of registrations) if (!names.has(name)) {
+      dispose(); registrations.delete(name);
     }
-    if (m.role === "teammate") memberNames.set(agent, m.name);
-    installed.set(agent, definitions.map(t => agent.ctx.tools.register(t)));
+    for (const definition of desired) if (!registrations.has(definition.name)) {
+      registrations.set(definition.name, agent.ctx.tools.register(definition));
+    }
+    if (registrations.size) installed.set(agent, registrations);
+    else installed.delete(agent);
   }
   for (const a of ctx.agents.list()) attach(a);
   const off = [
@@ -498,7 +516,7 @@ export function install(ctx, config, { defineTool, z }) {
       // 此时agents可能已经注销，不能再用tryMembership解析身份。
       const name = memberNames.get(agent), entry = waiting.get(name);
       if (entry?.agent === agent) entry.agent = undefined;
-      for (const dispose of installed.get(agent) ?? []) dispose();
+      for (const dispose of installed.get(agent)?.values() ?? []) dispose();
       installed.delete(agent);
     })
   ];
@@ -508,7 +526,7 @@ export function install(ctx, config, { defineTool, z }) {
     await preparation?.catch(() => undefined);
     waiting.clear();
     for (const dispose of off) if (typeof dispose === "function") dispose();
-    for (const disposers of installed.values()) for (const dispose of disposers) dispose();
+    for (const registrations of installed.values()) for (const dispose of registrations.values()) dispose();
     installed.clear();
     await wakeQueue.idle();
     await view?.close();

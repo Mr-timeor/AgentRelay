@@ -1,0 +1,5 @@
+# 仅提供装载行；用户profile按同一id覆盖配置并启用。
+- insert:
+    - id: dynamic-task-scheduler
+      name: './index.mjs'
+      disabled: true

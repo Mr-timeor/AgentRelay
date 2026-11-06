@@ -1,24 +1,10 @@
 // 在独立目录编译和组装，不更新已通过junction安装的harness目录。
 import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adapterSource } from "./adapter-source.mjs";
+import { assembleBundle, compileCore } from "./bundle-build.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-async function compile(target) {
-  await new Promise((accept, reject) => {
-    const child = spawn(process.execPath, [join(root, "node_modules/typescript/bin/tsc"),
-      "--project", join(root, "tsconfig.json"), "--outDir", target, "--sourceMap", "false"],
-    { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    child.stdout.on("data", data => { output += data; });
-    child.stderr.on("data", data => { output += data; });
-    child.on("error", reject);
-    child.on("exit", code => code === 0 ? accept() : reject(new Error(`编译失败 (${code})：${output}`)));
-  });
-}
 
 async function listFiles(folder, prefix = "") {
   const files = [];
@@ -37,7 +23,7 @@ export async function buildLocalPackage(outputParent = join(root, ".scheduler/re
   const target = await mkdtemp(join(outputParent, `scheduler-${metadata.version}-`));
   const core = join(target, "core");
   await mkdir(core);
-  await compile(join(core, "dist"));
+  await compileCore(join(core, "dist"));
   await writeFile(join(core, "package.json"), JSON.stringify({
     name: metadata.name, version: metadata.version, private: true, type: "module",
     license: metadata.license,
@@ -45,22 +31,9 @@ export async function buildLocalPackage(outputParent = join(root, ".scheduler/re
   }, null, 2) + "\n");
 
   const bundle = join(target, "harness/bundle"), view = join(target, "harness/view-bundle");
-  await mkdir(bundle, { recursive: true });
-  await mkdir(view, { recursive: true });
-  for (const folder of [target, core, bundle, view]) await cp(join(root, "LICENSE"), join(folder, "LICENSE"));
-  for (const file of ["package.json", "cordis.patch.yml"]) {
-    await cp(join(root, "harness/bundle", file), join(bundle, file));
-  }
-  await cp(join(root, "harness/index.mjs"), join(bundle, "index.mjs"));
-  await writeFile(join(bundle, "adapter.mjs"), await adapterSource(root));
-  for (const file of ["package.json", "cordis.patch.yml"]) {
-    await cp(join(root, "harness/view-bundle", file), join(view, file));
-  }
-  await cp(join(root, "harness/view-index.mjs"), join(view, "index.mjs"));
-  await cp(join(core, "dist"), join(bundle, "dist"), { recursive: true });
-  for (const folder of ["core", "ui"]) {
-    await cp(join(core, "dist", folder), join(view, "dist", folder), { recursive: true });
-  }
+  for (const folder of [target, core]) await cp(join(root, "LICENSE"), join(folder, "LICENSE"));
+  await assembleBundle({ kind: "bundle", compiledDirectory: join(core, "dist"), target: bundle });
+  await assembleBundle({ kind: "view-bundle", compiledDirectory: join(core, "dist"), target: view });
   await mkdir(join(target, "fixtures/benchmarks"), { recursive: true });
   await cp(join(root, "fixtures/development.json"), join(target, "fixtures/development.json"));
   await cp(join(root, "fixtures/wakeup.json"), join(target, "fixtures/wakeup.json"));
@@ -82,7 +55,7 @@ export async function buildLocalPackage(outputParent = join(root, ".scheduler/re
   const manifest = {
     name: metadata.name, version: metadata.version, createdAt: new Date().toISOString(),
     kind: "local-validation", license: metadata.license, licenseStatus: "declared", node: metadata.engines.node,
-    hostBaseline: "0.2.1-rc.2", files: await listFiles(target)
+    hostBaseline: "0.2.1-rc.3", hostValidation: "pending", files: await listFiles(target)
   };
   // manifest最后写入；缺少它表示组装尚未完成。
   await writeFile(join(target, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");

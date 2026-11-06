@@ -22,15 +22,19 @@ let result = { steps: [], errors: [] };
 const cleanupErrors = [];
 try {
   await writeFile(prepared.logFile, "");
-  mock = await startStartupMock(prepared.logFile);
+  const packageVersion = JSON.parse(await readFile(join(prepared.installedBundle, "package.json"), "utf8")).version;
+  const fileEvidence = packageVersion === "0.1.1";
+  process.env.SCHEDULER_STARTUP_FILE_EVIDENCE = fileEvidence ? "1" : "0";
+  mock = await startStartupMock(prepared.logFile, { fileEvidence });
   const patch = await readFile(prepared.patchFile, "utf8");
   if (!patch.includes("__STARTUP_MOCK_BASE_URL__")) throw new Error("该隔离profile已运行，请重新setup生成独立现场");
   await writeFile(prepared.patchFile, patch.replace("__STARTUP_MOCK_BASE_URL__", mock.url));
   const resources = process.env.SCHEDULER_STARTUP_HOST_RESOURCES || "D:/deepseek-harness/desktop/resources";
   const modulePath = name => pathToFileURL(join(resources, "app.asar/dsh/node_modules/@deepseek-ai", name, "lib", name === "dsh" ? "profile-boot.js" : "index.js")).href;
-  const [{ runProfile }, { loadLayeredEnv }] = await Promise.all([
-    import(modulePath("dsh")), import(modulePath("dsh-app-boot"))
+  const [{ runProfile }, { loadLayeredEnv }, { createUserMessage }] = await Promise.all([
+    import(modulePath("dsh")), import(modulePath("dsh-app-boot")), import(modulePath("dsh-llm"))
   ]);
+  globalThis.__schedulerStartupCreateUserMessage = createUserMessage;
   booted = await runProfile({ environment: loadLayeredEnv("dsh"), profile: prepared.profile, patchFiles: [], args: [] });
   if (!globalThis.__schedulerStartupProbe) throw new Error("按需启动探针未加载");
   result = await globalThis.__schedulerStartupProbe;

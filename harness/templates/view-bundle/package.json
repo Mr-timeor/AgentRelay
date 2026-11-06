@@ -1,0 +1,8 @@
+{
+  "name": "dynamic-task-scheduler-view",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": { "@deepseek-ai/schemastery": "*" }
+}

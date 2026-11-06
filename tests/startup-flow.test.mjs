@@ -18,12 +18,14 @@ const names = rows => rows.map(row => typeof row === "string" ? row : row.id ?? 
 
 async function setup(t) {
   const workspace = await mkdtemp(join(tmpdir(), "scheduler-startup-"));
-  const tools = new Map(), listeners = new Map(), memberships = new WeakMap();
+  const tools = new Map(), listeners = new Map(), memberships = new WeakMap(), registrations = new Map();
   const members = new Map(), agents = new Map(), live = [], sent = [], spawns = [];
   function makeAgent(id) {
-    const table = new Map(); tools.set(id, table);
+    const table = new Map(), tokens = new Map(); tools.set(id, table); registrations.set(id, tokens);
     return { id, session: { header: { cwd: workspace } }, ctx: { tools: { register(definition) {
-      table.set(definition.name, definition); return () => table.delete(definition.name);
+      const token = Symbol(definition.name);
+      table.set(definition.name, definition); tokens.set(definition.name, token);
+      return () => { if (tokens.get(definition.name) === token) { table.delete(definition.name); tokens.delete(definition.name); } };
     } } } };
   }
   const lead = makeAgent("lead-session"), other = makeAgent("other-lead");
@@ -85,6 +87,16 @@ async function setup(t) {
     graphFile: join(workspace, ".scheduler/flow.html") };
   return {
     workspace, paths, lead, other, tools, sent, spawns, call, dispose, addMember, ctx,
+    // 模拟新版DSH单步准入：重注册同名工具也不会继承已发布的调用资格。
+    step: (name = "lead") => {
+      const current = agent(name), admitted = new Map(registrations.get(current.id));
+      return (tool, args = {}) => {
+        if (!admitted.has(tool) || registrations.get(current.id).get(tool) !== admitted.get(tool)) {
+          return Promise.reject(new Error(`UNKNOWN_TOOL: ${tool}`));
+        }
+        return call(name, tool, args);
+      };
+    },
     manage: args => call("lead", "scheduler_manage", args),
     next: (name, readySummary) => call(name, "scheduler_next", readySummary === undefined ? {} : { readySummary }),
     load: args => call("lead", "scheduler_manage", { action: "load", ...args }),
@@ -327,4 +339,42 @@ test("另一个工具仍在等待宿主返回时拒绝卸载，保留可继续�
   assert.equal((await h.state()).runs.length, 1);
   const run = await h.next("dev");
   assert.equal(run.taskId, "A1");
+});
+
+test("动态加载保留管理工具注册，新增工具在下一步准入；卸载后原管理入口仍有效", async t => {
+  const h = await setup(t), first = h.step();
+  await first("scheduler_manage", { action: "load" });
+  await assert.rejects(first("scheduler_status"), /UNKNOWN_TOOL/);
+  await first("scheduler_manage", { action: "prepare", project: JSON.stringify(project()) });
+  const next = h.step();
+  assert.equal((await next("scheduler_status")).startup.phase, "waiting");
+  await next("scheduler_manage", { action: "unload" });
+  await assert.rejects(next("scheduler_status"), /UNKNOWN_TOOL/);
+  assert.equal((await next("scheduler_manage", { action: "load" })).startup.phase, "planning");
+});
+
+test("工具回执采集工作区文件证据，内容变化阻止验收且不解锁下游", async t => {
+  const h = await setup(t), p = project();
+  p.tasks[0].review = true;
+  p.tasks[1].dependsOn = [{ taskId: "A1", output: "api" }];
+  await h.load(); await h.prepare(p);
+  await h.spawn("dev"); await h.spawn("qa");
+  await h.next("dev", "开发已就绪"); await h.next("qa", "测试已就绪");
+  const run = await h.next("dev"), path = join(h.workspace, "contract.md");
+  await writeFile(path, "API v1\n");
+  await h.call("dev", "scheduler_report", { dispatchId: run.dispatchId, status: "completed", summary: "提交接口",
+    outputs: '{"api":"contract.md"}', files: '{"api":["contract.md"]}',
+    tests: '[{"command":"node --test","exitCode":0,"stdout":"logs/tests.txt"}]' });
+  const before = await readFile(h.paths.stateFile);
+  const detail = await h.call("lead", "scheduler_status", { taskId: "A1" });
+  assert.match(detail.progress.outputs.api.files[0].sha256, /^[a-f0-9]{64}$/);
+  assert.equal(detail.runs[0].tests[0].source, "reported");
+  await writeFile(path, "API v2\n");
+  await assert.rejects(h.manage({ action: "accept", target: "A1" }));
+  assert.deepEqual(await readFile(h.paths.stateFile), before);
+  assert.equal(h.sent.filter(row => row.taskId === "B1").length, 0);
+  await writeFile(path, "API v1\n");
+  await h.manage({ action: "accept", target: "A1" });
+  assert.equal((await h.state()).progress.A1.status, "completed");
+  assert.equal(h.sent.filter(row => row.taskId === "B1").length, 1);
 });

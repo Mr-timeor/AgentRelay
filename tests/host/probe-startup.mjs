@@ -35,6 +35,7 @@ export function apply(ctx) {
     try {
       const prepared = JSON.parse(await readFile(process.env.SCHEDULER_STARTUP_PREPARED, "utf8"));
       const output = process.env.SCHEDULER_STARTUP_REPORT_DIR;
+      const captureFiles = process.env.SCHEDULER_STARTUP_FILE_EVIDENCE === "1";
       handle = await waitFor(async () => {
         try {
           return await ctx.agents.create({ sessionId: `session-startup-lead-${randomUUID()}`,
@@ -51,10 +52,30 @@ export function apply(ctx) {
       assert.deepEqual(await readdir(prepared.workspace), []);
       step("standby-no-project-or-html", { tools: names(), cwd: lead.session.header.cwd });
 
-      const call = async (name, args = {}) => {
+      const call = async (name, args = {}, expectedError) => {
         const tool = ctx.tools.get(name, lead);
         assert(tool, `未注册工具 ${name}`);
-        if (name === "scheduler_manage") managementCalls.push({ action: args.action, target: args.target, at: new Date().toISOString() });
+        if (name === "scheduler_manage") {
+          managementCalls.push({ action: args.action, target: args.target, at: new Date().toISOString() });
+          const before = (await readFile(prepared.logFile, "utf8")).trim().split("\n").filter(Boolean).length;
+          const createUserMessage = globalThis.__schedulerStartupCreateUserMessage;
+          assert.equal(typeof createUserMessage, "function", "探针需要宿主消息构造器");
+          lead.steer(createUserMessage({
+            content: [{ type: "text", text: "AGENTRELAY_PROBE_COMMAND:" + JSON.stringify({ tool: name, args, id: randomUUID() }) }],
+            source: { kind: "agent-message", form: "relay", senderSessionId: lead.id }
+          }));
+          await deadline(lead.whenIdle(), 15000, `模型工具管道${args.action}`);
+          const rows = (await readFile(prepared.logFile, "utf8")).trim().split("\n").filter(Boolean).slice(before).map(line => JSON.parse(line));
+          const receipt = rows.find(row => row.actor === "lead" && row.toolName === name
+            && JSON.stringify(row.toolArgs) === JSON.stringify(args));
+          assert(receipt, `宿主未返回${args.action}的工具结果，查看mock.jsonl而非绕过准入重试`);
+          if (expectedError) {
+            assert.match(receipt.toolResultText, expectedError, "需要预期的文件验收错误，其他准入或工具错误不算通过");
+            return { expectedRejected: true };
+          }
+          assert(receipt.toolResult && typeof receipt.toolResult === "object", `工具${args.action}没有成功结果：${receipt.toolResultText}`);
+          return receipt.toolResult;
+        }
         return JSON.parse((await tool.execute(args, { agent: lead, signal })).result);
       };
       const loaded = await call("scheduler_manage", { action: "load" });
@@ -66,13 +87,13 @@ export function apply(ctx) {
       assert.deepEqual(names(), ["scheduler_manage", "scheduler_next", "scheduler_report", "scheduler_status"]);
       step("load-current-workspace", { paths: loaded.paths, explicitWorkspaceArgument: false,
         currentWorkingDirectoryService: typeof ctx.get?.("workingDirectory")?.ensure === "function",
-        invocation: "registered-tool-execute", naturalLanguageRouting: "not-tested" });
+        invocation: "native-model-tool-pipeline/local-mock", naturalLanguageRouting: "not-tested" });
 
       const project = {
         name: "按需启动开发测试", maxSegment: 2,
         agents: [{ id: "developer", categories: ["开发"] }, { id: "tester", categories: ["测试"] }],
         tasks: [
-          { id: "A1", title: "交付接口", category: "开发", owner: "developer", outputs: ["api"], resources: ["src/api.md"] },
+          { id: "A1", title: "交付接口", category: "开发", owner: "developer", outputs: ["api"], review: captureFiles, resources: ["src/api.md"] },
           { id: "Q1", title: "检查接口", category: "测试", owner: "tester", dependsOn: [{ taskId: "A1", output: "api" }], resources: ["tests/"] }
         ]
       };
@@ -89,6 +110,7 @@ export function apply(ctx) {
       assert.match(await readFile(prepared.graphFile, "utf8"), /Q1/);
       await writeFile(join(output, "state-after-prepare.json"), JSON.stringify(planned, null, 2) + "\n");
       step("prepare-task-plan-and-html", { agentCount: 2, paused: true, paths: plan.paths, revision: planned.revision });
+      if (captureFiles) await writeFile(join(prepared.workspace, "mock-api.md"), "API v1\n");
 
       for (const [event, type] of [["agent/created", "created"], ["agent/disposed", "disposed"]]) {
         off.push(ctx.on(event, ({ agent }) => {
@@ -118,6 +140,27 @@ export function apply(ctx) {
         paused: true, runs: 0, testerNaturallyUnloaded: true });
 
       await deadline(call("scheduler_manage", { action: "spawn", target: "developer" }), 10000, "developer启动");
+      if (captureFiles) {
+        const detail = await waitFor(async () => {
+          const value = await call("scheduler_status", { taskId: "A1" });
+          return value.progress.status === "review" ? value : undefined;
+        }, 30000, "A1带文件证据待验收");
+        assert.match(detail.progress.outputs.api.files[0].sha256, /^[a-f0-9]{64}$/);
+        const before = await readFile(prepared.stateFile);
+        await writeFile(join(prepared.workspace, "mock-api.md"), "API v2\n");
+        await call("scheduler_manage", { action: "accept", target: "A1" }, /交付文件内容已变化/u);
+        assert.deepEqual(await readFile(prepared.stateFile), before, "内容变化时不得提交验收状态");
+        const blocked = JSON.parse(before);
+        assert(!blocked.runs.some(run => run.taskId === "Q1"), "未验收不得解锁Q1");
+        await writeFile(join(output, "state-rejected-file-accept.json"), before);
+        await writeFile(join(prepared.workspace, "mock-api.md"), "API v1\n");
+        const accepted = await call("scheduler_manage", { action: "accept", target: "A1" });
+        assert.equal(typeof accepted?.revision, "number");
+        step("file-evidence-rejected-change-and-accepted-original", {
+          file: detail.progress.outputs.api.files[0], rejectedStateUnchanged: true,
+          restoredOriginalAccepted: true, invocation: "native-model-tool-pipeline/local-mock"
+        });
+      }
       await waitFor(async () => {
         const detail = await call("scheduler_status", { taskId: "Q1" });
         return detail.progress.status === "completed";
@@ -143,13 +186,16 @@ export function apply(ctx) {
       assert.deepEqual(readinessCalls.map(row => row.actor).sort(), ["developer", "tester"]);
       assert(readinessCalls.every(row => typeof row.action.args.readySummary === "string" && row.action.args.readySummary.trim()));
       const leadToolCalls = rows.filter(row => row.actor === "lead" && row.action?.tool);
-      assert.deepEqual(leadToolCalls, []);
+      assert.equal(leadToolCalls.length, managementCalls.length);
+      assert(leadToolCalls.every(row => row.action.tool === "scheduler_manage"
+        && ["load", "prepare", "spawn", "accept"].includes(row.action.args.action)));
       assert.equal(managementCalls.filter(call => call.action === "dispatch").length, 0);
       step("all-ready-auto-cross-member-complete", { testerSessionId: String(tester.id),
         readyMessages: status.startup.readyMessages, readinessCalls: readinessCalls.map(row => ({ actor: row.actor, args: row.action.args, at: row.at })),
         activations, managementCalls, revision: final.revision,
         runs: final.runs.map(run => ({ taskId: run.taskId, agentId: run.agentId, phase: run.phase })),
-        leadSchedulingToolCalls: 0, manualDispatches: 0, realModelCalls: 0 });
+        leadSchedulingToolCalls: leadToolCalls.length, leadDispatchToolCalls: 0,
+        invocation: "native-model-tool-pipeline/local-mock", manualDispatches: 0, realModelCalls: 0 });
     } catch (error) {
       result.errors.push(String(error?.stack ?? error));
     } finally {

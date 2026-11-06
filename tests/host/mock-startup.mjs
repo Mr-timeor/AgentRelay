@@ -54,10 +54,18 @@ function currentDelivery(messages) {
   return undefined;
 }
 
-export function decideStartup(messages) {
+export function decideStartup(messages, options = {}) {
   const actor = actorOf(messages);
-  if (actor === "lead") return { text: "收到成员通知，常规推进由插件完成。" };
   const current = decisionMessages(messages);
+  if (actor === "lead") {
+    const index = current.findLastIndex(message => message.role === "user");
+    const match = textOf(current[index]?.content).match(/^AGENTRELAY_PROBE_COMMAND:(\{[\s\S]*\})$/u);
+    const command = match ? parseJson(match[1]) : undefined;
+    if (command?.tool === "scheduler_manage" && command.args && !toolCalls(current.slice(index + 1)).length) {
+      return { tool: command.tool, args: command.args };
+    }
+    return { text: "收到成员通知，常规推进由插件完成。" };
+  }
   const last = current.at(-1);
   if (last?.role === "user") {
     const delivery = currentDelivery(current);
@@ -73,12 +81,13 @@ export function decideStartup(messages) {
     if (typeof operation.result?.taskId === "string" && typeof operation.result.dispatchId === "string") {
       return { tool: "scheduler_report", args: {
         dispatchId: operation.result.dispatchId, summary: `${actor}已完成${operation.result.taskId}`,
-        ...(operation.result.taskId === "A1" ? { outputs: JSON.stringify({ api: "mock-api.md" }) } : {})
+        ...(operation.result.taskId === "A1" ? { outputs: JSON.stringify({ api: "mock-api.md" }),
+          ...(options.fileEvidence ? { files: JSON.stringify({ api: ["mock-api.md"] }) } : {}) } : {})
       } };
     }
   }
   if (operation?.call?.name === "scheduler_report" && typeof operation.result?.taskId === "string"
-    && operation.result.state?.status === "completed") return { tool: "scheduler_next", args: {} };
+    && ["completed", "review"].includes(operation.result.state?.status)) return { tool: "scheduler_next", args: {} };
   return { text: "本轮没有可继续的成功工具结果，结束。" };
 }
 
@@ -87,7 +96,7 @@ function chunk(delta, finish = null) {
     model: "mock-model", choices: [{ index: 0, delta, finish_reason: finish }] };
 }
 
-export async function startStartupMock(logFile) {
+export async function startStartupMock(logFile, options = {}) {
   let sequence = 0;
   const server = http.createServer(async (req, res) => {
     try {
@@ -102,14 +111,15 @@ export async function startStartupMock(logFile) {
       const messages = request.messages;
       const current = decisionMessages(messages);
       const operation = currentTool(current);
-      const action = decideStartup(messages);
+      const action = decideStartup(messages, options);
       if (logFile) await appendFile(logFile, JSON.stringify({
         at: new Date().toISOString(), actor: actorOf(messages), action,
         lastRole: messages.at(-1)?.role, decisionLastRole: current.at(-1)?.role,
         count: messages.length, ignoredHostNotices: messages.length - current.length,
         firstUser: textOf(messages.find(message => message.role === "user")?.content).slice(0, 1000),
         lastUser: textOf(messages.findLast(message => message.role === "user")?.content).slice(0, 1000),
-        ...(operation ? { toolName: operation.call?.name, toolResult: operation.result } : {})
+        ...(operation ? { toolName: operation.call?.name, toolArgs: operation.call?.args, toolResult: operation.result,
+          toolResultText: textOf(current.at(-1)?.content) } : {})
       }) + "\n");
       res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache", connection: "keep-alive" });

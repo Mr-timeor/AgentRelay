@@ -37,3 +37,28 @@ test("启动mock只响应当前正式委托，成功领取和交付后继续原�
 test("启动mock的Lead通知只返回文字", () => {
   assert.equal(decideStartup([{ role: "user", content: "成员已完成" }]).tool, undefined);
 });
+
+test("启动mock让Lead经真实工具管道逐次load和prepare，不对同一命令循环调用", () => {
+  const command = args => ({ role: "user", content: "AGENTRELAY_PROBE_COMMAND:" + JSON.stringify({
+    id: args.action, tool: "scheduler_manage", args
+  }) });
+  const load = { action: "load" }, prepare = { action: "prepare", project: '{"tasks":[],"agents":[]}' };
+  const initial = [command(load)];
+  assert.deepEqual(decideStartup(initial), { tool: "scheduler_manage", args: load });
+  const loaded = [...initial, ...response("scheduler_manage", load, { startup: { phase: "planning" } })];
+  assert.equal(decideStartup(loaded).tool, undefined);
+  assert.deepEqual(decideStartup([...loaded, { role: "assistant", content: "已加载" }, command(prepare)]),
+    { tool: "scheduler_manage", args: prepare });
+  assert.equal(decideStartup([...loaded, { role: "assistant", content: "已加载" }, { role: "user", content: "普通通知" }]).tool, undefined);
+});
+
+test("维护版启动mock显式提交文件证据，待验收后进入等待且不循环提交", () => {
+  const developer = { role: "user", content: "你是专项执行者developer。先回复分工与准备情况。" };
+  const claimed = [developer, ...response("scheduler_next", {}, { taskId: "A1", dispatchId: "a1" })];
+  const report = decideStartup(claimed, { fileEvidence: true });
+  assert.equal(report.tool, "scheduler_report");
+  assert.deepEqual(JSON.parse(report.args.files), { api: ["mock-api.md"] });
+  const reviewed = [...claimed, ...response("scheduler_report", report.args, { taskId: "A1", state: { status: "review" } })];
+  assert.deepEqual(decideStartup(reviewed, { fileEvidence: true }), { tool: "scheduler_next", args: {} });
+  assert.equal(decideStartup([...reviewed, ...response("scheduler_next", {}, { waiting: true })], { fileEvidence: true }).tool, undefined);
+});

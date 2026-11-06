@@ -1,0 +1,12 @@
+{
+  "name": "dynamic-task-scheduler",
+  "description": "Lead/teammate scheduler tools for DeepSeek Harness",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  }
+}

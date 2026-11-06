@@ -1,0 +1,4 @@
+- insert:
+    - id: dynamic-task-scheduler-view
+      name: './index.mjs'
+      disabled: true

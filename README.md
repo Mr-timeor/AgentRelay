@@ -6,6 +6,8 @@
 
 [下载 v0.1.0](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip) · [中文安装说明](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/INSTALL.zh-CN.md) · [SHA256](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip.sha256)
 
+当前源码为 **v0.1.1 维护候选**，增加独立构建输出、跨进程单写者和可选文件证据。尚未发布，DSH 0.2.1-rc.3 / 0.2.2-rc.1 的新包接入验收待完成；上方下载链接仍为已发布的 v0.1.0。
+
 ![任务流程图，演示数据按依赖阶段排列，展示状态、执行者与等待原因](docs/images/task-view.png)
 
 ## 工作方式
@@ -74,6 +76,7 @@ dsh plugin --profile desktop add "<解压目录>/harness/bundle"
 - **连续执行**。给出同一成员可连续推进的执行段，实际领取时逐项检查条件。
 - **等待成员推进**。依赖解除后，通过宿主向原团队子会话投递委托并恢复执行，减少人工转述和重复派发。
 - **交付与返工**。传递任务卡、前置产物引用及短摘要，返工时保留已接受交付与旧报告。
+- **可选文件证据**。显式声明本地文件后，记录大小和 SHA-256，验收时核对；测试命令和退出码可随回执记录。
 - **计划调整**。支持追加任务及修改从未派发的任务，保留执行历史。
 - **只读流程图**。展示任务依赖、负责人、状态、等待原因和交付点。
 
@@ -87,6 +90,8 @@ v0.1.0 已在 **Windows Desktop 0.2.1-rc.3、Node 24.21.0** 中完成 CLI 安装
 
 当前支持单项目、单 Lead、本地 JSON 状态。文件资源范围依赖成员遵守声明，共享工作区中的实际文件操作由开发流程管理，宿主中断后的未结束运行需要人工对账。
 
+v0.1.1 对采用新版存储的进程实施同一状态单写者保护。正常关闭释放锁；异常退出留下的锁需确认旧进程已停止后人工恢复。文件证据检查只针对显式声明的文件，不代表文件冻结或测试已独立通过。
+
 ## 开发
 
 需要 Node.js 22+。生成 ZIP 的命令在 Windows 下运行。
@@ -96,8 +101,11 @@ git clone https://github.com/Mr-timeor/AgentRelay.git
 cd AgentRelay
 npm ci
 npm test
+npm run check:build
 npm run package:download
 ```
+
+`npm run build` 和 `npm run build:view` 默认输出到 `.scheduler/build/harness/`。源码、元数据模板和共享组装逻辑是构建来源；仓库的 `harness/bundle`、`harness/view-bundle` 可能仍是已安装旧副本，开发和安装应使用新构建或解压包，不直接加载这些目录。默认构建不会覆盖日常安装。
 
 - [设计方案](docs/设计方案.md)
 - [接口与数据格式](docs/接口与数据契约.md)

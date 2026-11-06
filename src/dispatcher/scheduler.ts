@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { FileStore } from "../store/file-store.js";
 import { canOwn, diagnose, held, plan, segmentFrom } from "../core/planner.js";
-import { normalize, type ArtifactReference, type Run, type State, type Task, type Segment } from "../core/model.js";
+import { normalize, type ArtifactReference, type Run, type State, type Task, type Segment, type TestReport, type TestEvidence } from "../core/model.js";
+import { fileEvidence, sameFileEvidence, verifyFileEvidence } from "./file-evidence.js";
 
 export type Receipt = Pick<Run, "dispatchId" | "attemptId" | "permitId">;
 export interface DeliveryDependency {
@@ -31,15 +32,29 @@ function validateReference(reference: unknown, name: string): asserts reference 
     throw new Error(`产物 ${name} 的引用须为非空字符串或非空字符串数组`);
   }
 }
-function outputEntries(outputs: unknown): [string, ArtifactReference][] {
+function outputEntries(outputs: unknown, field = "outputs"): [string, ArtifactReference][] {
   if (outputs === undefined) return [];
   if (!outputs || typeof outputs !== "object" || Array.isArray(outputs)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(outputs))) {
-    throw new Error("outputs 须为产物名称到引用的对象");
+    throw new Error(`${field} 须为产物名称到引用的对象`);
   }
   return Object.entries(outputs).map(([name, reference]) => {
     validateReference(reference, name);
     return [name, reference];
+  });
+}
+function testEvidence(tests: unknown): TestEvidence[] | undefined {
+  if (tests === undefined) return;
+  if (!Array.isArray(tests)) throw new Error("tests 须为测试结果数组");
+  return Array.from(tests, test => {
+    if (!test || typeof test !== "object" || typeof test.command !== "string" || !test.command.trim()
+      || !Number.isSafeInteger(test.exitCode)
+      || [test.stdout, test.stderr].some(value => value !== undefined && typeof value !== "string")) {
+      throw new Error("tests 每项需要 command、整数 exitCode，以及可选 stdout/stderr 日志位置");
+    }
+    return { command: test.command, exitCode: test.exitCode,
+      ...(test.stdout !== undefined ? { stdout: test.stdout } : {}),
+      ...(test.stderr !== undefined ? { stderr: test.stderr } : {}), source: "reported" };
   });
 }
 function sameReference(a: ArtifactReference, b: ArtifactReference): boolean {
@@ -70,7 +85,7 @@ function describe(state: State, run: Run, segment: Segment): Delivery {
   const previous = [...state.runs].reverse().find(r => r.taskId === task.id && r.rework);
   const acceptedOutputs = Object.fromEntries(Object.entries(state.progress[task.id].outputs)
     .filter(([, output]) => output.accepted).map(([name, output]) => [name, output.reference]));
-  const { rework: _rework, ...current } = run;
+  const { rework: _rework, outputs: _outputs, tests: _tests, ...current } = run;
   return structuredClone({
     ...current, title: task.title, task,
     ...(previous?.rework ? { rework: { previousAttemptId: previous.attemptId, ...previous.rework } } : {}),
@@ -90,7 +105,7 @@ function active(s: State, agentId: string, ids: Receipt): Run {
   return run;
 }
 export class Scheduler {
-  constructor(readonly store: FileStore, readonly receiptTimeoutMs = 120_000) {}
+  constructor(readonly store: FileStore, readonly receiptTimeoutMs = 120_000, readonly workspace = process.cwd()) {}
   snapshot() { return this.store.snapshot(); }
   plan(agentId?: string) {
     const s = this.snapshot();
@@ -159,43 +174,65 @@ export class Scheduler {
   async report(agentId: string, ids: Receipt, report: {
     status: "completed" | "blocked" | "failed" | "checkpoint";
     summary: string; outputs?: Record<string, ArtifactReference>;
+    files?: Record<string, ArtifactReference>; tests?: TestReport[];
   }): Promise<void> {
-    await this.store.change(s => {
+    const submitted = structuredClone(report);
+    await this.store.change(async s => {
       const run = active(s, agentId, ids);
       if (run.phase !== "active") throw new Error("请先确认当前委托，结束或未知的运行不能提交");
-      if (!["completed", "blocked", "failed", "checkpoint"].includes(report.status)) throw new Error("未知结果状态");
+      if (!["completed", "blocked", "failed", "checkpoint"].includes(submitted.status)) throw new Error("未知结果状态");
       const task = s.project.tasks.find(t => t.id === run.taskId)!, progress = s.progress[task.id];
-      for (const [name, reference] of outputEntries(report.outputs)) {
+      const previousOutputs = progress.outputs;
+      const tests = testEvidence(submitted.tests);
+      for (const [name, reference] of outputEntries(submitted.outputs)) {
         if (!task.outputs.includes(name)) throw new Error(`未声明产物：${name}`);
         const previous = Object.hasOwn(progress.outputs, name) ? progress.outputs[name] : undefined;
         if (previous?.accepted) {
           if (!sameReference(previous.reference, reference)) throw new Error(`产物 ${name} 已被接受，请新增修订任务`);
           continue;
         }
-        progress.outputs = { ...progress.outputs, [name]: { accepted: !task.review, reference: structuredClone(reference) } };
+        progress.outputs = { ...progress.outputs, [name]: { accepted: !task.review, reference: structuredClone(reference),
+          ...(previous?.files && sameReference(previous.reference, reference) ? { files: previous.files } : {}) } };
       }
-      if (report.status === "completed" && task.outputs.some(o => !Object.hasOwn(progress.outputs, o))) {
+      for (const [name, paths] of outputEntries(submitted.files, "files")) {
+        if (!task.outputs.includes(name)) throw new Error(`未声明产物：${name}`);
+        const output = Object.hasOwn(progress.outputs, name) ? progress.outputs[name] : undefined;
+        if (!output) throw new Error(`files 对应的产物 ${name} 尚无引用，请一并提交 outputs`);
+        const files = await Promise.all((typeof paths === "string" ? [paths] : paths).map(path => fileEvidence(this.workspace, path)));
+        // 普通任务本次报告才接受；只禁止改写此前已经接受的文件证据。
+        const acceptedBefore = Object.hasOwn(previousOutputs, name) ? previousOutputs[name] : undefined;
+        if (acceptedBefore?.accepted) {
+          if (!sameFileEvidence(acceptedBefore.files, files)) throw new Error(`产物 ${name} 已被接受，不能补写或替换文件证据，请新增修订任务`);
+        } else {
+          progress.outputs = { ...progress.outputs, [name]: { ...output, files } };
+        }
+      }
+      if (submitted.status === "completed" && task.outputs.some(o => !Object.hasOwn(progress.outputs, o))) {
         throw new Error("请补齐声明产物的引用");
       }
-      progress.summary = report.summary; run.summary = report.summary;
-      if (report.status !== "checkpoint") {
-        progress.status = report.status === "completed" && task.review ? "review" : report.status;
+      if (submitted.outputs !== undefined || submitted.files !== undefined) run.outputs = structuredClone(progress.outputs);
+      if (tests?.length) run.tests = [...(run.tests ?? []), ...tests];
+      progress.summary = submitted.summary; run.summary = submitted.summary;
+      if (submitted.status !== "checkpoint") {
+        progress.status = submitted.status === "completed" && task.review ? "review" : submitted.status;
         run.phase = "finished";
       }
-      event(s, report.status, task.id, report.summary);
+      event(s, submitted.status, task.id, submitted.summary);
     });
   }
   async accept(taskId: string, output?: string): Promise<void> {
-    await this.store.change(s => {
+    await this.store.change(async s => {
       const p = s.progress[taskId];
       if (!p) throw new Error("未知任务");
       if (output) {
         if (!Object.hasOwn(p.outputs, output) || !["running", "review"].includes(p.status)) throw new Error("无待验收产物");
         if (!p.outputs[output].accepted) validateReference(p.outputs[output].reference, output);
+        await verifyFileEvidence(this.workspace, p.outputs[output].files);
         p.outputs[output].accepted = true;
       } else {
         if (p.status !== "review") throw new Error("任务未进入验收");
         for (const [name, value] of Object.entries(p.outputs)) if (!value.accepted) validateReference(value.reference, name);
+        for (const value of Object.values(p.outputs)) await verifyFileEvidence(this.workspace, value.files);
         p.status = "completed";
         Object.values(p.outputs).forEach(o => { o.accepted = true; });
       }

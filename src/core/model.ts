@@ -1,5 +1,8 @@
 export type Status = "pending" | "running" | "review" | "completed" | "blocked" | "failed";
 export type ArtifactReference = string | string[];
+export interface FileEvidence { path: string; size: number; sha256: string }
+export interface TestReport { command: string; exitCode: number; stdout?: string; stderr?: string }
+export interface TestEvidence extends TestReport { source: "reported" }
 export interface Dependency { taskId: string; output?: string }
 export interface Resource { path: string; mode: "read" | "write" }
 export interface Task {
@@ -23,12 +26,14 @@ export interface Run {
   phase: "awaiting" | "active" | "unknown" | "finished";
   startedAt: number;
   summary?: string;
+  outputs?: Progress["outputs"];
+  tests?: TestEvidence[];
   rework?: { feedback: string; outputs: Progress["outputs"] };
 }
 export interface Progress {
   status: Status;
   approved: boolean;
-  outputs: Record<string, { accepted: boolean; reference: ArtifactReference }>;
+  outputs: Record<string, { accepted: boolean; reference: ArtifactReference; files?: FileEvidence[] }>;
   summary?: string;
 }
 export interface State {
