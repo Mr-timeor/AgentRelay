@@ -6,7 +6,7 @@
 
 [下载 v0.1.0](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip) · [中文安装说明](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/INSTALL.zh-CN.md) · [SHA256](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip.sha256)
 
-当前源码为 **v0.1.1 维护候选**，增加独立构建输出、跨进程单写者和可选文件证据。尚未发布，DSH 0.2.1-rc.3 / 0.2.2-rc.1 的新包接入验收待完成；上方下载链接仍为已发布的 v0.1.0。
+当前源码为 **v0.1.1 维护候选**，增加独立构建输出、跨进程单写者和可选文件证据，已完成两版 Windows 宿主的隔离验收。上方链接提供已发布的 v0.1.0。
 
 ![任务流程图，演示数据按依赖阶段排列，展示状态、执行者与等待原因](docs/images/task-view.png)
 
@@ -83,6 +83,8 @@ dsh plugin --profile desktop add "<解压目录>/harness/bundle"
 算法采用依赖与资源约束下的贪心列表调度和连续链融合，细节见[调度算法](docs/调度算法.md)。核心独立于模型厂商，目前提供的聊天平台适配器是 DeepSeek Harness。
 
 ## 验证与使用范围
+
+v0.1.1 的同一候选 ZIP 在 **Windows Desktop 0.2.1-rc.3** 通过隔离加载和冷启动，在 **0.2.2-rc.1** 通过隔离 CLI 安装和冷启动。两轮使用宿主自带的 Node 24.21.0 和本地 mock，覆盖就绪门禁、自动派发、原会话恢复、文件验收和状态复开。实际导出的三栏任务图已用 Chrome 检查。
 
 v0.1.0 已在 **Windows Desktop 0.2.1-rc.3、Node 24.21.0** 中完成 CLI 安装及两次冷启动验证，本地151项检查通过。启动闭环使用本地 mock，覆盖待机、准备、全员就绪后派发及原会话恢复。
 
