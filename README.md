@@ -4,9 +4,9 @@
 
 安装启用后默认待机。需要协作时发送“加载调度器”，由 Lead 规划任务和团队子代理分工，等全部成员回复就绪后自动开工。
 
-[下载 v0.1.0](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip) · [中文安装说明](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/INSTALL.zh-CN.md) · [SHA256](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.0/dynamic-task-scheduler-0.1.0.zip.sha256)
+[下载 v0.1.1](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.1/dynamic-task-scheduler-0.1.1.zip) · [中文安装说明](docs/下载安装.md) · [SHA-256](https://github.com/Mr-timeor/AgentRelay/releases/download/v0.1.1/dynamic-task-scheduler-0.1.1.zip.sha256)
 
-当前源码为 **v0.1.1 维护候选**，增加独立构建输出、跨进程单写者和可选文件证据，已完成两版 Windows 宿主的隔离验收。上方链接提供已发布的 v0.1.0。
+**v0.1.1** 增加独立构建输出、跨进程单写者、可选文件验收证据和三栏任务图，已完成两版 Windows 宿主的隔离验收。
 
 ![任务流程图，演示数据按依赖阶段排列，展示状态、执行者与等待原因](docs/images/task-view.png)
 
@@ -84,11 +84,11 @@ dsh plugin --profile desktop add "<解压目录>/harness/bundle"
 
 ## 验证与使用范围
 
-v0.1.1 的同一候选 ZIP 在 **Windows Desktop 0.2.1-rc.3** 通过隔离加载和冷启动，在 **0.2.2-rc.1** 通过隔离 CLI 安装和冷启动。两轮使用宿主自带的 Node 24.21.0 和本地 mock，覆盖就绪门禁、自动派发、原会话恢复、文件验收和状态复开。实际导出的三栏任务图已用 Chrome 检查。
+v0.1.1 的发布 ZIP 在 **Windows Desktop 0.2.1-rc.3** 通过隔离加载和冷启动，在 **0.2.2-rc.1** 通过隔离 CLI 安装和冷启动。两轮使用宿主自带的 Node 24.21.0 和本地 mock，覆盖就绪门禁、自动派发、原会话恢复、文件验收和状态复开。实际导出的三栏任务图已用 Chrome 检查。
 
 v0.1.0 已在 **Windows Desktop 0.2.1-rc.3、Node 24.21.0** 中完成 CLI 安装及两次冷启动验证，本地151项检查通过。启动闭环使用本地 mock，覆盖待机、准备、全员就绪后派发及原会话恢复。
 
-本轮未实测模型对“加载调度器”的自然语言选工具过程，也未直接调用 Desktop 的 `install_bundle` 工具。其他机器与宿主版本需要适配验证。[发布说明](docs/发布说明-v0.1.0.md)
+本轮未实测模型对“加载调度器”的自然语言选工具过程，也未直接调用 Desktop 的 `install_bundle` 工具。其他机器与宿主版本需要适配验证。[v0.1.1 发布说明](https://github.com/Mr-timeor/AgentRelay/releases/tag/v0.1.1)
 
 当前支持单项目、单 Lead、本地 JSON 状态。文件资源范围依赖成员遵守声明，共享工作区中的实际文件操作由开发流程管理，宿主中断后的未结束运行需要人工对账。
 
