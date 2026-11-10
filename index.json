@@ -1,0 +1,36 @@
+{
+  "format": 1,
+  "title": {
+    "en": "AgentRelay plugins",
+    "zh": "AgentRelay 插件索引"
+  },
+  "plugins": [
+    {
+      "name": "dynamic-task-scheduler",
+      "title": "AgentRelay",
+      "description": {
+        "en": "Plan, coordinate and visualize development and testing with DSH team subagents",
+        "zh": "约束 DSH 专项子智能体的分工与行为，可视化安排开发与测试任务"
+      },
+      "author": "Mr-timeor",
+      "homepage": "https://github.com/Mr-timeor/AgentRelay",
+      "repository": {
+        "url": "https://github.com/Mr-timeor/AgentRelay"
+      },
+      "versions": [
+        {
+          "version": "0.1.1",
+          "publishTimestamp": 1794125241,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mr-timeor/AgentRelay",
+            "commit": "429a8c1b7a482971da420fa94e77c526bc807509"
+          },
+          "engines": {
+            "dsh": "0.2.2-rc.1"
+          }
+        }
+      ]
+    }
+  ]
+}
