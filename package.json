@@ -1,0 +1,31 @@
+{
+  "name": "dynamic-task-scheduler",
+  "description": "AgentRelay: team subagent orchestration and a visual task plan for DeepSeek Harness",
+  "type": "module",
+  "main": "index.mjs",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "version": "0.1.1",
+  "license": "MIT",
+  "homepage": "https://github.com/Mr-timeor/AgentRelay",
+  "repository": {
+    "url": "git+https://github.com/Mr-timeor/AgentRelay.git",
+    "type": "git"
+  },
+  "engines": {
+    "dsh": "0.2.2-rc.1"
+  },
+  "files": [
+    "adapter.mjs",
+    "index.mjs",
+    "cordis.patch.yml",
+    "dist/"
+  ]
+}
