@@ -122,21 +122,35 @@ test("待机仅提供启动管理入口，普通调用不创建任务文件或�
   assert.deepEqual(await readdir(h.workspace), []);
   const loaded = await h.call("other", "scheduler_manage", { action: "load", workspace: h.workspace });
   assert.equal(loaded.startup.phase, "planning");
-  assert.equal(h.tools.get(h.lead.id).size, 0);
+  assert.deepEqual([...h.tools.get(h.lead.id).keys()], ["scheduler_manage"]);
   assert.deepEqual(await readdir(h.workspace), []);
 });
 
-test("加载时使用当前会话工作区并绑定Lead，先给路径和规划指引", async t => {
+test("加载后其他 Lead 保留入口，收到占用提示，原 Lead 卸载后可加载", async t => {
   const h = await setup(t);
-  const staleTool = h.tools.get(h.other.id).get("scheduler_manage");
+  const otherStep = h.step("other");
   const loaded = await h.load();
   assert.equal(loaded.startup.phase, "planning");
   assert.deepEqual(loaded.paths, h.paths);
+  assert.deepEqual([...h.tools.get(h.other.id).keys()], ["scheduler_manage"]);
+  const otherWorkspace = join(h.workspace, "other");
+  await assert.rejects(otherStep("scheduler_manage", { action: "load" }), error => {
+    assert.match(error.message, /另一条主会话使用.*lead-session.*unload/u);
+    assert.ok(!error.message.includes(h.workspace));
+    return true;
+  });
+  for (const action of ["prepare", "unload"]) {
+    await assert.rejects(otherStep("scheduler_manage", { action }), /未绑定工作区/u);
+  }
+  assert.deepEqual(await h.load(), {
+    startup: loaded.startup, paths: loaded.paths, agentCount: loaded.agentCount,
+    agents: loaded.agents, waitingForAgents: loaded.waitingForAgents
+  });
   assert.deepEqual(await readdir(h.workspace), []);
-  await assert.rejects(staleTool.execute({ action: "load" }, {
-    agent: h.other, signal: new AbortController().signal
-  }));
-  assert.equal(h.tools.get(h.other.id).size, 0);
+  assert.equal((await h.manage({ action: "unload" })).startup.phase, "standby");
+  const next = await otherStep("scheduler_manage", { action: "load", workspace: otherWorkspace });
+  assert.equal(next.startup.phase, "planning");
+  assert.equal(next.paths.projectFile, join(otherWorkspace, ".scheduler/tasks.json"));
 });
 
 test("准备计划生成任务JSON和HTML，返回实际成员数量，运行保持暂停", async t => {
@@ -305,7 +319,8 @@ test("异步解析工作目录时两个Lead竞争，只有一个能完成绑定"
   assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
   assert.equal(results.filter(result => result.status === "rejected").length, 1);
   assert.equal(results.find(result => result.status === "fulfilled").value.startup.phase, "planning");
-  assert.equal([h.lead, h.other].filter(agent => h.tools.get(agent.id).size > 0).length, 1);
+  assert.match(results.find(result => result.status === "rejected").reason.message, /另一条主会话使用.*unload/u);
+  assert.equal([h.lead, h.other].filter(agent => h.tools.get(agent.id).has("scheduler_status")).length, 1);
   assert.deepEqual(await readdir(h.workspace), []);
 });
 

@@ -73,7 +73,7 @@ export function segmentFrom(state: State, first: Task, agentId: string, reserved
   let next: Task | undefined = first, stop = "等待外部前置或没有连续任务";
   while (next && tasks.length < state.project.maxSegment) {
     tasks.push(next.id); reserved.add(next.id);
-    if (next.review) { stop = "等待检查点验收"; break; }
+    if (next.review) { stop = "等待整项验收"; break; }
     virtual.progress[next.id].status = "completed";
     for (const output of next.outputs) virtual.progress[next.id].outputs[output] = { accepted: true, reference: "仅规划" };
     const previous: string = next.id;

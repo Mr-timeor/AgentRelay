@@ -1,5 +1,5 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve, dirname, isAbsolute } from "node:path";
+import { access, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { basename, resolve, dirname, isAbsolute } from "node:path";
 import { normalize, initial } from "../dist/core/model.js";
 import { diagnose } from "../dist/core/planner.js";
 import { FileStore } from "../dist/store/file-store.js";
@@ -23,23 +23,17 @@ const runInfo = ({ summary: _summary, rework: _rework, outputs: _outputs, tests:
 // - defineTool 的 output.schema 是值 schema DSL（普通对象），不是 schemastery 实例；
 // - 可选参数必须省略 required，写成 required:false 会被拒绝；
 // - tryMembership 要求传入 agents 服务中的同一个 live Agent 对象。
-export function install(ctx, config, { defineTool, z }) {
+function createRuntime(ctx, config, refreshTools, binding, release) {
   const onDemand = config.onDemand === true;
-  if (!onDemand && (!config.projectFile || !config.stateFile)) {
-    throw new Error("需要 projectFile 和 stateFile");
-  }
-  const explicitLead = config.leadSessionId && config.leadSessionId !== "auto"
-    ? String(config.leadSessionId) : undefined;
-  let boundLeadId = onDemand ? undefined : explicitLead;
-  let phase = onDemand ? "standby" : "running";
-  let paths = { projectFile: config.projectFile, stateFile: config.stateFile, graphFile: config.graphFile };
-  let workspaceRoot;
+  const explicitLead = configuredLead(config);
+  let boundLeadId = binding?.leadId ?? explicitLead;
+  let phase = onDemand ? "planning" : "running";
+  const paths = binding?.paths ?? { projectFile: config.projectFile, stateFile: config.stateFile, graphFile: config.graphFile };
+  let workspaceRoot = binding?.workspace;
   let plannedAgents = [], view;
   const ready = new Map();
-  const installed = new Map();
   // 逻辑等待属于持久成员/session；live Agent只是当前回合的载体。
   const waiting = new Map();
-  const memberNames = new WeakMap();
   const shutdown = new AbortController();
   let disposed = false;
   let servicePromise, preparation, activeTools = 0;
@@ -78,27 +72,7 @@ export function install(ctx, config, { defineTool, z }) {
     }
   })().catch(error => { servicePromise = undefined; throw error; });
 
-  async function load(args, exec) {
-    const m = ctx.agentTeams.tryMembership(exec.agent);
-    if (!m || m.role !== "lead" || (explicitLead && String(m.root.id) !== explicitLead)) throw new Error("加载仅限调度Lead");
-    if (phase !== "standby") { member(exec.agent, true); return startupResult(); }
-    const workingDirectory = ctx.get?.("workingDirectory");
-    const workspace = args.workspace ?? (workingDirectory
-      ? await workingDirectory.ensure(exec.agent, exec.signal) : exec.agent.session?.header.cwd);
-    if (disposed) throw new Error("调度器已释放");
-    if (phase !== "standby") { member(exec.agent, true); return startupResult(); }
-    if (typeof workspace !== "string" || !isAbsolute(workspace)) throw new Error("需要当前工作区绝对路径，请填写workspace");
-    const stateFile = resolve(workspace, config.stateFile || ".scheduler/state.json");
-    const selected = { projectFile: resolve(workspace, config.projectFile || ".scheduler/tasks.json"), stateFile,
-      graphFile: config.graphFile ? resolve(workspace, config.graphFile) : resolve(dirname(stateFile), "flow.html") };
-    const keys = Object.values(selected).map(path => process.platform === "win32" ? path.toLowerCase() : path);
-    if (new Set(keys).size !== 3) throw new Error("任务、状态和HTML需要不同文件路径");
-    paths = selected;
-    workspaceRoot = resolve(workspace);
-    phase = "planning";
-    bindLead(String(m.root.id));
-    return { ...startupResult(), instructions: "请先了解用户的开发测试任务。由当前Lead规划任务依赖、文件范围及专项成员，使用prepare提交完整project JSON（含name、agents和tasks）；也可先写入返回的projectFile，再调用prepare读取。成员数量按需要声明。若任务文件已存在，prepare不传project恢复原任务，再在开工后追加新需求。此时只做计划；prepare会保存任务文件、生成HTML并返回分工，然后按返回列表spawn专项成员。" };
-  }
+  const loaded = () => ({ ...startupResult(), instructions: "请先了解用户的开发测试任务。由当前Lead规划任务依赖、文件范围及专项成员，使用prepare提交完整project JSON（含name、agents和tasks）；也可先写入返回的projectFile，再调用prepare读取。每项需要结构化交付的任务须在 tasks[].outputs 数组中声明产物名，例如 api，成员提交时用这些名称关联文件引用。需要整项验收的任务设置 review: true，成员报 completed 后由 Lead 验收。成员数量按需要声明。若任务文件已存在，prepare不传project恢复原任务，再在开工后追加新需求。此时只做计划；prepare会保存任务文件、生成HTML并返回分工，然后按返回列表spawn专项成员。" });
 
   async function prepare(args) {
     if (phase !== "planning") throw new Error("当前计划已准备，请先结束并卸载后再加载新计划");
@@ -140,9 +114,8 @@ export function install(ctx, config, { defineTool, z }) {
     await view?.close(); view = undefined;
     await s?.store.close(); servicePromise = undefined;
     waiting.clear(); ready.clear(); plannedAgents = [];
-    boundLeadId = undefined;
     phase = "standby";
-    refreshTools();
+    release();
     return startupResult();
   }
 
@@ -178,7 +151,6 @@ export function install(ctx, config, { defineTool, z }) {
   }
 
   function waitForMember(m, agent) {
-    memberNames.set(agent, m.name);
     waiting.set(m.name, { id: String(agent.id), agent });
   }
 
@@ -245,56 +217,21 @@ export function install(ctx, config, { defineTool, z }) {
     const m = ctx.agentTeams.tryMembership(agent);
     if (!m) throw new Error("此工具仅供调度团队使用");
     if (onDemand && phase === "standby") throw new Error("请先说加载调度器并调用load");
-    if (boundLeadId === undefined) bindLead(String(m.root.id));
+    if (boundLeadId === undefined) {
+      boundLeadId = String(m.root.id);
+      refreshTools();
+    }
     if (String(m.root.id) !== boundLeadId) throw new Error("此调度器已绑定另一个 Lead");
     if (!onDemand && workspaceRoot === undefined) {
       const cwd = m.root.session?.header.cwd;
       workspaceRoot = typeof cwd === "string" && isAbsolute(cwd) ? resolve(cwd) : process.cwd();
     }
     if (leadOnly && m.role !== "lead") throw new Error("此动作仅限 Lead");
-    if (m.role === "teammate") memberNames.set(agent, m.name);
     return m;
   }
 
-  // 绑定后只保留该团队的工具；其他 root 已注册的工具一并撤回。
-  function bindLead(rootId) {
-    boundLeadId = rootId;
-    refreshTools();
-  }
-
-  function refreshTools() {
-    for (const agent of [...installed.keys()]) attach(agent);
-    for (const a of ctx.agents.list()) attach(a);
-  }
-
-  const textParam = (description, required = false) => ({
-    type: "string", description, ...(required ? { required: true } : {})
-  });
-
-  function tool(name, description, parameters, execute) {
-    return defineTool({
-      name, description, parameters,
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: { result: { type: "string", required: true } }
-        },
-        render: (_args, value) => [{ type: "text", text: value.result }]
-      },
-      async execute(args, exec) {
-        if (disposed) throw new Error("调度器已释放");
-        if (phase === "unloading") throw new Error("调度器正在卸载");
-        activeTools++;
-        try { return { result: JSON.stringify(await execute(args, exec)) }; }
-        finally { activeTools--; }
-      }
-    });
-  }
-
-  const definitions = [
-    tool("scheduler_status", "空参查看概览，摘要最多300字符；传taskId读取该任务完整摘要与最近运行。详情不检查回执到期，首次调用仍会初始化状态。", {
-      taskId: textParam("可选：读取指定任务详情与完整摘要")
-    }, async (args, exec) => {
+  const handlers = {
+    async scheduler_status(args, exec) {
       member(exec.agent);
       if (onDemand && ["planning", "preparing"].includes(phase)) return startupResult();
       const s = await service();
@@ -315,11 +252,8 @@ export function install(ctx, config, { defineTool, z }) {
         .map(([taskId, progress]) => [taskId, compactProgress(taskId, progress)])),
         autoDispatch: automatic(), ...waitingStatus(), ...(onDemand ? startupResult() : {}),
         runs: state.runs.filter(r => r.phase !== "finished").map(runInfo) };
-    }),
-    tool("scheduler_next", "专项执行者领取下一任务。收到委托可传 dispatchId 确认；当前项完成后空参领取下一项。", {
-      dispatchId: textParam("收到的委托 ID"),
-      readySummary: textParam("启动准备时先阅读项目计划，用一句话回复自己的分工和已就绪")
-    }, async (args, exec) => {
+    },
+    async scheduler_next(args, exec) {
       const m = member(exec.agent);
       if (m.role !== "teammate") throw new Error("Lead 请使用 scheduler_manage 派发");
       if (onDemand && phase !== "running") {
@@ -382,15 +316,8 @@ export function install(ctx, config, { defineTool, z }) {
       }
       await s.acknowledge(m.name, delivery);
       return s.delivery(delivery);
-    }),
-    tool("scheduler_report", "报告当前委托结果。普通任务直接完成；声明 review 的任务等待检查点验收。", {
-      dispatchId: textParam("当前委托 ID", true),
-      summary: textParam("简短结果与检查依据", true),
-      status: textParam("completed（默认）、checkpoint、blocked 或 failed"),
-      outputs: textParam('产物引用 JSON；值为非空字符串或非空字符串数组，如 {"api":"docs/api.md"}'),
-      files: textParam('可选文件证据 JSON，如 {"api":["docs/api.md"]}；路径相对当前工作区，插件实际采集大小和SHA-256'),
-      tests: textParam('可选自测记录 JSON 数组：[{"command":"node --test","exitCode":0,"stdout":"logs/test.txt"}]；仅记录，不执行命令')
-    }, async (args, exec) => {
+    },
+    async scheduler_report(args, exec) {
       const m = member(exec.agent), s = await service();
       const run = s.snapshot().runs.find(r => r.dispatchId === args.dispatchId && r.agentId === m.name);
       if (!run || m.role !== "teammate") throw new Error("没有属于你的委托");
@@ -402,19 +329,10 @@ export function install(ctx, config, { defineTool, z }) {
       });
       const wakeups = await wakeReady(m.root);
       return { taskId: run.taskId, state: s.snapshot().progress[run.taskId], ...(wakeups ? { wakeups } : {}) };
-    }),
-    tool("scheduler_manage", (onDemand ? "默认待机。用户说加载调度器时调用load；获得任务后用prepare提交完整项目JSON，按返回分工spawn；全部专项成员回复就绪才自动执行。结束后可unload返回待机。" : "") + "Lead 管理：spawn、dispatch、accept、rework、approve、pause、resume、retry、resolve-stopped、add-tasks、update-task。停止对账前先确认执行者已停止。", {
-      action: textParam("管理动作", true), target: textParam("执行者名称或任务 ID"),
-      workspace: textParam("load可选：工作区绝对路径，通常使用当前会话目录"),
-      project: textParam("prepare可选：完整项目JSON文本，含name、agents、tasks；省略时读取既有任务文件"),
-      output: textParam("仅验收指定中间产物时填写"),
-      feedback: textParam("rework：具体返工反馈，不能留空"),
-      changes: textParam("update-task：修改字段的 JSON 对象文本，可用 title、specFile、dependsOn、owner、resources、priority"),
-      tasks: textParam("add-tasks：单任务对象或任务数组的 JSON 文本；与 tasksFile 二选一"),
-      tasksFile: textParam("add-tasks：任务 JSON 文件路径，相对 projectFile 所在目录；也可用绝对路径")
-    }, async (args, exec) => {
-      if (onDemand && args.action === "load") return load(args, exec);
+    },
+    async scheduler_manage(args, exec) {
       const m = member(exec.agent, true);
+      if (onDemand && args.action === "load") return startupResult();
       if (onDemand && args.action === "unload") return unload();
       if (onDemand && args.action === "prepare") {
         if (preparation) throw new Error("计划正在准备，请等待本次操作结束");
@@ -481,27 +399,192 @@ export function install(ctx, config, { defineTool, z }) {
       else throw new Error("未知管理动作");
       const wakeups = await wakeReady(m.root);
       return { revision: s.snapshot().revision, ...(wakeups ? { wakeups } : {}) };
+    }
+  };
+
+  return {
+    loaded,
+    accepts(membership) {
+      return boundLeadId === undefined ? membership.role === "lead" : String(membership.root.id) === boundLeadId;
+    },
+    async execute(name, args, exec) {
+      if (disposed) throw new Error("调度器已释放");
+      if (phase === "unloading") throw new Error("调度器正在释放会话绑定，请待卸载完成后重试");
+      activeTools++;
+      try { return await handlers[name](args, exec); }
+      finally { activeTools--; }
+    },
+    detach(agent) {
+      for (const entry of waiting.values()) {
+        if (entry.agent === agent) entry.agent = undefined;
+      }
+    },
+    async dispose() {
+      disposed = true;
+      shutdown.abort();
+      await preparation?.catch(() => undefined);
+      waiting.clear();
+      await wakeQueue.idle();
+      await view?.close();
+      const s = await servicePromise?.catch(() => undefined);
+      await s?.store.close();
+    }
+  };
+}
+
+function defineSchedulerTools(onDemand, defineTool, execute) {
+  const textParam = (description, required = false) => ({
+    type: "string", description, ...(required ? { required: true } : {})
+  });
+
+  function tool(name, description, parameters) {
+    return defineTool({
+      name, description, parameters,
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: { result: { type: "string", required: true } }
+        },
+        render: (_args, value) => [{ type: "text", text: value.result }]
+      },
+      async execute(args, exec) {
+        return { result: JSON.stringify(await execute(name, args, exec)) };
+      }
+    });
+  }
+
+  return [
+    tool("scheduler_status", "空参查看概览，摘要最多300字符；传taskId读取该任务完整摘要与最近运行。详情不检查回执到期，首次调用仍会初始化状态。", {
+      taskId: textParam("可选：读取指定任务详情与完整摘要")
+    }),
+    tool("scheduler_next", "专项执行者领取下一任务。收到委托可传 dispatchId 确认；当前项完成后空参领取下一项。", {
+      dispatchId: textParam("收到的委托 ID"),
+      readySummary: textParam("启动准备时先阅读项目计划，用一句话回复自己的分工和已就绪")
+    }),
+    tool("scheduler_report", "报告当前委托结果。checkpoint 用于中途交付，任务继续执行。完成整项工作后报 completed，review: true 的任务随后进入待验收，由 Lead 调用 accept。", {
+      dispatchId: textParam("当前委托 ID", true),
+      summary: textParam("简短结果与检查依据", true),
+      status: textParam("checkpoint：中途交付，保持本轮运行。completed（默认）：结束本轮，review: true 时进入待验收。也可报 blocked 或 failed。"),
+      outputs: textParam('产物引用 JSON。键须已在任务的 outputs 中声明，值为非空字符串或非空字符串数组，如 {"api":"docs/api.md"}。报 completed 时须确保全部已声明产物都有引用，可随本次报告一并提交。'),
+      files: textParam('可选文件证据 JSON。键须对应已声明且已提交引用的产物，可与 outputs 一并提交，如 {"api":["docs/api.md"]}。路径相对当前工作区，插件采集大小和 SHA-256。'),
+      tests: textParam('可选自测记录 JSON 数组：[{"command":"node --test","exitCode":0,"stdout":"logs/test.txt"}]；仅记录，不执行命令')
+    }),
+    tool("scheduler_manage", (onDemand ? "用户说加载调度器时调用 load。若提示已被另一条主会话占用，请把会话 ID 和卸载步骤告诉用户。加载成功后用 prepare 提交计划，按分工 spawn，全部成员就绪后自动执行。结束后可调用 unload 释放当前绑定。" : "") + "Lead 管理：spawn、dispatch、accept、rework、approve、pause、resume、retry、resolve-stopped、add-tasks、update-task。停止对账前先确认执行者已停止。", {
+      action: textParam("管理动作", true), target: textParam("执行者名称或任务 ID"),
+      workspace: textParam("load可选：工作区绝对路径，通常使用当前会话目录"),
+      project: textParam("prepare 可选参数。完整项目 JSON 文本，含 name、agents、tasks。每项需要结构化交付的任务在 outputs 数组中声明产物名，例如 api。省略 project 时读取既有任务文件。"),
+      output: textParam("验收单个产物时填写已提交的产物名。整项验收时省略，等执行者报 completed、任务进入待验收后再调用 accept。"),
+      feedback: textParam("rework：具体返工反馈，不能留空"),
+      changes: textParam("update-task：修改字段的 JSON 对象文本，可用 title、specFile、dependsOn、owner、resources、priority"),
+      tasks: textParam("add-tasks：单任务对象或任务数组的 JSON 文本；与 tasksFile 二选一"),
+      tasksFile: textParam("add-tasks：任务 JSON 文件路径，相对 projectFile 所在目录；也可用绝对路径")
     })
   ];
+}
+
+const configuredLead = config => config.leadSessionId && config.leadSessionId !== "auto"
+  ? String(config.leadSessionId) : undefined;
+
+function pathKey(path) {
+  return process.platform === "win32" ? path.toLowerCase() : path;
+}
+
+// Keep load read-only, including when a configured path has not been created yet.
+async function canonicalPath(path) {
+  try { return await realpath(path); }
+  catch (error) {
+    const parent = dirname(path);
+    if (error.code !== "ENOENT" || parent === path) throw error;
+    const entry = await lstat(path).catch(error => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    if (entry?.isSymbolicLink()) throw new Error(`调度路径链接的目标不存在：${path}`);
+    return resolve(await canonicalPath(parent), basename(path));
+  }
+}
+
+export function install(ctx, config, { defineTool }) {
+  const onDemand = config.onDemand === true;
+  if (!onDemand && (!config.projectFile || !config.stateFile)) throw new Error("需要 projectFile 和 stateFile");
+  const explicitLead = configuredLead(config);
+  const canLoad = m => m?.role === "lead" && (!explicitLead || String(m.root.id) === explicitLead);
+  const bindings = new Map();
+  const installed = new Map();
+  const fixed = onDemand ? undefined : createRuntime(ctx, config, refreshTools);
+  let disposed = false;
+
+  async function load(args, exec, membership) {
+    if (!canLoad(membership)) throw new Error("加载仅限调度 Lead");
+    const leadId = String(membership.root.id);
+    const existing = bindings.get(leadId);
+    if (existing && args.workspace === undefined) return existing.runtime.execute("scheduler_manage", args, exec);
+    const workingDirectory = ctx.get?.("workingDirectory");
+    const workspace = args.workspace ?? (workingDirectory
+      ? await workingDirectory.ensure(exec.agent, exec.signal) : exec.agent.session?.header.cwd);
+    if (typeof workspace !== "string" || !isAbsolute(workspace)) throw new Error("需要当前工作区绝对路径，请填写workspace");
+    const workspaceKey = pathKey(await canonicalPath(resolve(workspace)));
+    const stateFile = resolve(workspace, config.stateFile || ".scheduler/state.json");
+    const paths = { projectFile: resolve(workspace, config.projectFile || ".scheduler/tasks.json"), stateFile,
+      graphFile: config.graphFile ? resolve(workspace, config.graphFile) : resolve(dirname(stateFile), "flow.html") };
+    const canonical = await Promise.all(Object.values(paths).map(canonicalPath));
+    const statePath = canonical[1];
+    const sidecarPaths = await Promise.all([statePath + ".bak", statePath + ".lock"].map(canonicalPath));
+    const files = new Set([...canonical, ...sidecarPaths].map(pathKey));
+    if (files.size !== 5) throw new Error("任务、状态、HTML 与状态备份及锁文件需要不同路径");
+
+    if (disposed) throw new Error("调度器已释放");
+    exec.signal?.throwIfAborted();
+    if (!canLoad(ctx.agentTeams.tryMembership(exec.agent))) throw new Error("加载仅限调度 Lead");
+    // No awaits between checking all reservations and making this binding visible.
+    const current = bindings.get(leadId);
+    if (current) {
+      if (current.workspaceKey !== workspaceKey) throw new Error("当前会话已绑定一个工作区，请先调用 unload 再切换工作区");
+      return current.runtime.execute("scheduler_manage", args, exec);
+    }
+    for (const [ownerId, binding] of bindings) {
+      const reason = binding.workspaceKey === workspaceKey ? "此工作区"
+        : [...files].some(file => binding.files.has(file)) ? "配置的调度文件" : undefined;
+      if (reason) {
+        throw new Error(`${reason}正由另一条主会话使用（会话 ID ${ownerId}）。请回到该会话，待任务收尾后调用 scheduler_manage({action:"unload"})，再在这里加载。`);
+      }
+    }
+    const release = () => {
+      bindings.delete(leadId);
+      if (!disposed) refreshTools();
+    };
+    const runtime = createRuntime(ctx, config, refreshTools, { leadId, paths, workspace: resolve(workspace) }, release);
+    bindings.set(leadId, { workspaceKey, files, runtime });
+    refreshTools();
+    return runtime.loaded();
+  }
+
+  async function execute(name, args, exec) {
+    if (disposed) throw new Error("调度器已释放");
+    if (fixed) return fixed.execute(name, args, exec);
+    const membership = ctx.agentTeams.tryMembership(exec.agent);
+    if (name === "scheduler_manage" && args.action === "load") return load(args, exec, membership);
+    const binding = membership && bindings.get(String(membership.root.id));
+    if (!binding) throw new Error("当前会话未绑定工作区，请先调用 load");
+    return binding.runtime.execute(name, args, exec);
+  }
+
+  const definitions = defineSchedulerTools(onDemand, defineTool, execute);
+  const manage = definitions.filter(tool => tool.name === "scheduler_manage");
 
   function attach(agent) {
-    const m = ctx.agentTeams.tryMembership(agent);
+    const membership = ctx.agentTeams.tryMembership(agent);
     let desired = [];
-    if (m) {
-      if (onDemand && phase === "standby") {
-        if (m.role === "lead" && (!explicitLead || String(m.root.id) === explicitLead)) {
-          desired = definitions.filter(t => t.name === "scheduler_manage");
-        }
-      } else if (boundLeadId !== undefined ? String(m.root.id) === boundLeadId : m.role === "lead") {
-        desired = definitions;
-      }
-      if (m.role === "teammate" && desired.length) memberNames.set(agent, m.name);
+    if (membership) {
+      const runtime = fixed ?? bindings.get(String(membership.root.id))?.runtime;
+      if (runtime?.accepts(membership)) desired = definitions;
+      else if (onDemand && canLoad(membership)) desired = manage;
     }
-    // 保留仍可用的原注册。新版DSH按模型步骤固定准入，撤回再注册会使同批调用失效。
+    // Keep an existing admission valid across load and unload in the same model step.
     const registrations = installed.get(agent) ?? new Map();
-    const names = new Set(desired.map(t => t.name));
-    for (const [name, dispose] of registrations) if (!names.has(name)) {
-      dispose(); registrations.delete(name);
+    const names = new Set(desired.map(tool => tool.name));
+    for (const [name, unregister] of registrations) if (!names.has(name)) {
+      unregister();
+      registrations.delete(name);
     }
     for (const definition of desired) if (!registrations.has(definition.name)) {
       registrations.set(definition.name, agent.ctx.tools.register(definition));
@@ -509,28 +592,31 @@ export function install(ctx, config, { defineTool, z }) {
     if (registrations.size) installed.set(agent, registrations);
     else installed.delete(agent);
   }
-  for (const a of ctx.agents.list()) attach(a);
+
+  function refreshTools() {
+    for (const agent of new Set([...installed.keys(), ...ctx.agents.list()])) attach(agent);
+  }
+
+  refreshTools();
   const off = [
     ctx.on("agent/created", ({ agent }) => attach(agent)),
     ctx.on("agent/disposed", ({ agent }) => {
-      // 此时agents可能已经注销，不能再用tryMembership解析身份。
-      const name = memberNames.get(agent), entry = waiting.get(name);
-      if (entry?.agent === agent) entry.agent = undefined;
-      for (const dispose of installed.get(agent)?.values() ?? []) dispose();
+      fixed?.detach(agent);
+      for (const { runtime } of bindings.values()) runtime.detach(agent);
+      for (const unregister of installed.get(agent)?.values() ?? []) unregister();
       installed.delete(agent);
     })
   ];
   return async () => {
     disposed = true;
-    shutdown.abort();
-    await preparation?.catch(() => undefined);
-    waiting.clear();
-    for (const dispose of off) if (typeof dispose === "function") dispose();
-    for (const registrations of installed.values()) for (const dispose of registrations.values()) dispose();
+    for (const unsubscribe of off) if (typeof unsubscribe === "function") unsubscribe();
+    for (const registrations of installed.values()) for (const unregister of registrations.values()) unregister();
     installed.clear();
-    await wakeQueue.idle();
-    await view?.close();
-    const s = await servicePromise?.catch(() => undefined);
-    if (s) await s.store.close();
+    const runtimes = fixed ? [fixed] : [...bindings.values()].map(binding => binding.runtime);
+    const results = await Promise.allSettled(runtimes.map(runtime => runtime.dispose()));
+    bindings.clear();
+    const errors = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, "部分工作区释放失败");
   };
 }
